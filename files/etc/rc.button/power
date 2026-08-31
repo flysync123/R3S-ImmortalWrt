@@ -1,0 +1,18 @@
+#!/bin/sh
+# ==============================================================================
+# NanoPi R3S LTS 物理电源按键安全关机脚本
+# 路径：/etc/rc.button/power
+# 说明：当机身物理电源键被按下并释放时，procd 热插拔事件总线会自动调用此脚本。
+# ==============================================================================
+
+# 仅在按键释放 (released) 时触发关机，防止手指误触碰
+[ "$ACTION" = "released" ] && {
+    # 1. 记录关机事件到系统日志 (/var/log/messages 或 logread)
+    logger "LTS Power button pressed, executing safe shutdown..."
+
+    # 2. 强制刷盘：将 1GB 内存中未落盘的缓存与配置立即同步写回 32GB eMMC，防止数据损坏
+    sync
+
+    # 3. 触发标准 Linux ACPI/PMIC 安全关机流程
+    poweroff
+}

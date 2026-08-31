@@ -1,0 +1,157 @@
+name: Build ImmortalWrt from Source (Full Build)
+
+# ==============================================================================
+# 触发机制：在 GitHub Actions 页面手动一键点击触发全源码编译 (workflow_dispatch)
+# 耗时说明：全源码交叉编译包含内核与所有软件包，耗时约 1.5 ~ 2.5 小时
+# ==============================================================================
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'ImmortalWrt 源码分支 (如 openwrt-25.12 或 master)'
+        required: true
+        default: 'openwrt-25.12'
+
+env:
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
+  REPO_BRANCH: ${{ github.event.inputs.branch || 'openwrt-25.12' }}
+  TARGET: "rockchip"
+  SUBTARGET: "armv8"
+  PROFILE: "friendlyarm_nanopi-r3s"
+  ROOTFS_PARTSIZE: "4096"
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      # 1. 检出当前仓库中的代码与 files/ 优化配置文件
+      - name: Checkout 仓库文件
+        uses: actions/checkout@v4
+
+      # 2. 清理 GitHub Runner 虚拟机磁盘，释放 30GB+ 空间供源码全编译
+      - name: 清理磁盘空间
+        run: |
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -a -f || true
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib \
+            git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev \
+            libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev \
+            libssl-dev libtool lrzsz mkisofs mold msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 \
+            python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo timedatectl set-timezone "$TZ"
+
+      # 3. 克隆 ImmortalWrt 官方源码
+      - name: 克隆 ImmortalWrt 源码
+        run: |
+          git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
+
+      # 4. 更新与安装所有 Feeds 软件包定义
+      - name: 更新与安装 Feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      # 5. 生成精简硬件与插件配置 (.config)
+      - name: 生成目标配置 (.config)
+        run: |
+          cd openwrt
+          cat > .config <<EOF
+CONFIG_TARGET_rockchip=y
+CONFIG_TARGET_rockchip_armv8=y
+CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r3s=y
+CONFIG_TARGET_ROOTFS_PARTSIZE=${{ env.ROOTFS_PARTSIZE }}
+CONFIG_DEVEL=y
+CONFIG_USE_MOLD=y
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-theme-argon=y
+CONFIG_PACKAGE_luci-app-argon-config=y
+CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-argon-config-zh-cn=y
+CONFIG_LUCI_LANG_zh_Hans=y
+CONFIG_PACKAGE_luci-app-homeproxy=y
+CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=y
+CONFIG_PACKAGE_sing-box=y
+CONFIG_PACKAGE_zram-swap=y
+CONFIG_PACKAGE_kmod-tcp-bbr=y
+CONFIG_PACKAGE_kmod-r8169=y
+CONFIG_PACKAGE_r8169-firmware=y
+CONFIG_PACKAGE_kmod-gpio-button-hotplug=y
+CONFIG_PACKAGE_kmod-nft-offload=y
+CONFIG_PACKAGE_kmod-nft-tproxy=y
+CONFIG_PACKAGE_luci-app-cpufreq=y
+CONFIG_PACKAGE_luci-i18n-cpufreq-zh-cn=y
+CONFIG_PACKAGE_luci-app-nlbwmon=y
+CONFIG_PACKAGE_luci-i18n-nlbwmon-zh-cn=y
+CONFIG_PACKAGE_htop=y
+CONFIG_PACKAGE_curl=y
+CONFIG_PACKAGE_fdisk=y
+CONFIG_PACKAGE_e2fsprogs=y
+CONFIG_PACKAGE_partx-utils=y
+CONFIG_PACKAGE_autocore=y
+CONFIG_PACKAGE_default-settings-chn=y
+CONFIG_PACKAGE_luci-app-openclash=n
+CONFIG_PACKAGE_docker=n
+CONFIG_PACKAGE_dockerd=n
+CONFIG_PACKAGE_irqbalance=n
+EOF
+          make defconfig
+
+      # 6. 注入仓库中的 files 目录（BBR/关机按键/10.0.0.1开机自动配置）
+      - name: 注入自定义 files 配置
+        run: |
+          if [ -d "$GITHUB_WORKSPACE/files" ]; then
+            cp -r "$GITHUB_WORKSPACE/files" openwrt/files
+          fi
+
+      # 7. 预下载依赖包 (DL)
+      - name: 预下载依赖源码包 (make download)
+        run: |
+          cd openwrt
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      # 8. 编译固件 (多核优先，失败自动降级单核输出详细日志)
+      - name: 编译固件 (make compile)
+        run: |
+          cd openwrt
+          echo -e "$(nproc) thread compile"
+          make -j$(nproc) || make -j1 || make -j1 V=s
+
+      # 9. 整理生成的文件并生成日期标签
+      - name: 整理发布固件与生成日期标签
+        run: |
+          mkdir -p release_files
+          cp openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*-sysupgrade.img.gz release_files/ || true
+          cp openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*-squashfs-*.img.gz release_files/ || true
+          cp openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/sha256sums release_files/ || true
+
+          TAG_DATE=$(date +'%Y.%m.%d')
+          echo "RELEASE_TAG=ImmortalWrt-R3S-Source-${TAG_DATE}" >> $GITHUB_ENV
+          echo "RELEASE_TITLE=ImmortalWrt Source Build for NanoPi R3S (${TAG_DATE})" >> $GITHUB_ENV
+
+      # 10. 上传固件至 Actions Artifacts
+      - name: 上传构建固件到 Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.RELEASE_TAG }}
+          path: release_files/*
+
+      # 11. 自动发布到 GitHub Releases
+      - name: 发布至 GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TITLE }}
+          files: release_files/*
+          token: ${{ secrets.GITHUB_TOKEN }}

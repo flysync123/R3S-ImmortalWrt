@@ -1,0 +1,96 @@
+name: Build ImmortalWrt 25.12.1 for NanoPi R3S
+
+# ==============================================================================
+# 触发机制：支持在 GitHub 仓库 Actions 页面手动一键点击构建 (workflow_dispatch)
+# ==============================================================================
+on:
+  workflow_dispatch:
+
+# ==============================================================================
+# 全局环境变量配置
+# ==============================================================================
+env:
+  VERSION: "25.12.1"                      # ImmortalWrt 固件版本（采用 apk 包管理器，Linux 6.12 内核）
+  TARGET: "rockchip"                      # 目标 SoC 架构大类（Rockchip 瑞芯微系列）
+  SUBTARGET: "armv8"                      # 目标子架构（64 位 ARMv8）
+  PROFILE: "friendlyarm_nanopi-r3s"       # 官方设备唯一标识符（NanoPi R3S / R3S LTS 专属 Profile）
+  ROOTFS_PARTSIZE: "4096"                 # 根分区大小：直接分配 4096MB (4GB)
+
+  # ----------------------------------------------------------------------------
+  # 增量软件包列表：精选 1GB 内存最优解，集成 Argon 主题、HomeProxy+sing-box 与底层优化驱动
+  # 基础底层依赖（base-files、firewall4 等）ImageBuilder 会自动包含，此处只需声明增量插件
+  # ----------------------------------------------------------------------------
+  PACKAGES: >-
+    luci luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn
+    luci-app-homeproxy sing-box zram-swap kmod-tcp-bbr kmod-r8169 r8169-firmware
+    kmod-gpio-button-hotplug kmod-nft-offload kmod-nft-tproxy luci-app-cpufreq
+    luci-app-nlbwmon luci-i18n-base-zh-cn luci-i18n-cpufreq-zh-cn
+    luci-i18n-homeproxy-zh-cn luci-i18n-nlbwmon-zh-cn htop curl fdisk e2fsprogs
+    partx-utils autocore default-settings-chn
+
+# ==============================================================================
+# 构建任务定义
+# ==============================================================================
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    # 授予工作流写入权限，以便 softprops/action-gh-release 能够自动创建 Release 并上传产物
+    permissions:
+      contents: write
+
+    steps:
+      # 1. 检出当前仓库中的代码与 files/ 优化配置文件
+      - name: Checkout 仓库文件
+        uses: actions/checkout@v4
+
+      # 2. 安装解压依赖并下载官方预编译好的 ImageBuilder 镜像生成器
+      - name: 准备依赖并下载 ImageBuilder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses5-dev zlib1g-dev gawk git gettext libssl-dev xsltproc wget zstd
+
+          # 下载官方针对 rockchip/armv8 预编译的 ImageBuilder 归档包 (约几十 MB，毫秒级下载)
+          IB_URL="https://downloads.immortalwrt.org/releases/${{ env.VERSION }}/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/immortalwrt-imagebuilder-${{ env.VERSION }}-${{ env.TARGET }}-${{ env.SUBTARGET }}.Linux-x86_64.tar.zst"
+          wget -q $IB_URL -O ib.tar.zst
+          tar -I zstd -xf ib.tar.zst
+          mv immortalwrt-imagebuilder-* ib
+
+      # 3. 注入仓库中的 files 目录（BBR/关机按键/10.0.0.1开机自动配置），并执行极速组装打包 (约1分钟)
+      - name: 执行 ImageBuilder 固件打包 (含 files 优化注入)
+        run: |
+          cd ib
+          # 核心打包命令：组装指定设备、增量软件包、指定根分区大小及自定义配置目录
+          make image PROFILE="${{ env.PROFILE }}" \
+                     PACKAGES="${{ env.PACKAGES }}" \
+                     ROOTFS_PARTSIZE="${{ env.ROOTFS_PARTSIZE }}" \
+                     FILES="$GITHUB_WORKSPACE/files"
+
+      # 4. 提取生成的最终固件、sysupgrade 升级包与 SHA256 校验和文件
+      - name: 整理发布固件与生成日期标签
+        run: |
+          mkdir -p release_files
+          cp ib/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*-sysupgrade.img.gz release_files/ || true
+          cp ib/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*-squashfs-*.img.gz release_files/ || true
+          cp ib/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/sha256sums release_files/ || true
+
+          # 设置东八区时区并生成以日期格式命名的 Release Tag (例如 ImmortalWrt-R3S-25.12.1-2026.08.31)
+          sudo timedatectl set-timezone "Asia/Shanghai"
+          TAG_DATE=$(date +'%Y.%m.%d')
+          echo "RELEASE_TAG=ImmortalWrt-R3S-${{ env.VERSION }}-${TAG_DATE}" >> $GITHUB_ENV
+          echo "RELEASE_TITLE=ImmortalWrt ${{ env.VERSION }} for NanoPi R3S (${TAG_DATE})" >> $GITHUB_ENV
+
+      # 5. 上传固件至 GitHub Actions Artifacts（构建产物备份）
+      - name: 上传构建固件到 Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.RELEASE_TAG }}
+          path: release_files/*
+
+      # 6. 自动发布到 GitHub Releases 供永久直链下载（以日期格式命名）
+      - name: 发布至 GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TITLE }}
+          files: release_files/*
+          token: ${{ secrets.GITHUB_TOKEN }}
