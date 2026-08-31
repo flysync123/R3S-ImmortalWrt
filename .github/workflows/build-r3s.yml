@@ -1,0 +1,60 @@
+name: Build ImmortalWrt 25.12.1 for NanoPi R3S
+
+on:
+  workflow_dispatch:
+
+env:
+  VERSION: "25.12.1"
+  TARGET: "rockchip"
+  SUBTARGET: "armv8"
+  PROFILE: "friendlyarm_nanopi-r3s"
+  ROOTFS_PARTSIZE: "4096"
+  PACKAGES: >-
+    apk-openssl autocore automount base-files block-mount ca-bundle ca-certificates curl default-settings-chn dnsmasq-full dropbear e2fsprogs fdisk firewall4 fstools htop kmod-gpio-button-hotplug kmod-nf-nathelper kmod-nft-offload kmod-nft-tproxy kmod-r8169 kmod-tcp-bbr kmod-tun libc libgcc libustream-openssl logd luci luci-app-cpufreq luci-app-homeproxy luci-app-nlbwmon luci-i18n-base-zh-cn luci-i18n-cpufreq-zh-cn luci-i18n-homeproxy-zh-cn luci-i18n-nlbwmon-zh-cn mkf2fs mtd netifd nftables nlbwmon odhcp6c odhcpd-ipv6only partx-utils ppp ppp-mod-pppoe procd-ujail r8169-firmware sing-box uboot-envtools uci uclient-fetch urandom-seed urngd zram-swap
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout 仓库文件
+        uses: actions/checkout@v4
+
+      - name: 准备依赖并下载 ImageBuilder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses5-dev zlib1g-dev gawk git gettext libssl-dev xsltproc wget zstd
+          IB_URL="https://downloads.immortalwrt.org/releases/${{ env.VERSION }}/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/immortalwrt-imagebuilder-${{ env.VERSION }}-${{ env.TARGET }}-${{ env.SUBTARGET }}.Linux-x86_64.tar.zst"
+          wget -q $IB_URL -O ib.tar.zst
+          tar -I zstd -xf ib.tar.zst
+          mv immortalwrt-imagebuilder-* ib
+
+      - name: 执行 ImageBuilder 固件打包 (含 files 优化注入)
+        run: |
+          cd ib
+          [ -d "$GITHUB_WORKSPACE/files" ] && cp -r "$GITHUB_WORKSPACE/files" ./files
+          make image PROFILE="${{ env.PROFILE }}" \
+                     PACKAGES="${{ env.PACKAGES }}" \
+                     ROOTFS_PARTSIZE="${{ env.ROOTFS_PARTSIZE }}" \
+                     FILES="files"
+
+      - name: 整理发布固件
+        run: |
+          mkdir -p release_files
+          cp ib/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*-sysupgrade.img.gz release_files/ || true
+          cp ib/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*-squashfs-*.img.gz release_files/ || true
+          cp ib/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/sha256sums release_files/ || true
+
+      - name: 上传构建固件到 Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImmortalWrt-R3S-${{ env.VERSION }}-Firmware
+          path: release_files/*
+
+      - name: 发布至 GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ImmortalWrt-R3S-${{ env.VERSION }}-${{ github.run_id }}
+          files: release_files/*
+          token: ${{ secrets.GITHUB_TOKEN }}

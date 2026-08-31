@@ -1,0 +1,45 @@
+#!/bin/sh
+
+# 1. 自动全盘扩容 (健壮识别 32GB eMMC 或 SD 物理块设备并无缝扩展)
+TARGET_DEV=$(lsblk -nro NAME,TYPE | grep 'disk' | head -n1 | awk '{print "/dev/"$1}')
+[ -z "$TARGET_DEV" ] && TARGET_DEV=$(mount | grep -oE '/dev/mmcblk[0-9]' | head -n1)
+if [ -n "$TARGET_DEV" ]; then
+    echo -e "d\n2\nn\np\n2\n\n\nw" | fdisk "$TARGET_DEV" 2>/dev/null || true
+    partx -u "$TARGET_DEV" 2>/dev/null || true
+    resize2fs "${TARGET_DEV}p2" 2>/dev/null || resize2fs "${TARGET_DEV}2" 2>/dev/null || true
+fi
+
+# 2. 修改默认 LAN 口后台 IP 为 10.0.0.1 (防与光猫 192.168.1.1 冲突)
+uci set network.lan.ipaddr='10.0.0.1'
+uci commit network
+
+# 3. 开启网络软中断负载均衡 (Packet Steering / RPS)
+uci set network.globals.packet_steering='1'
+uci commit network
+
+# 4. 开启软件流量分载 (Flow Offloading - NAT 转发 CPU 降低 30~50%)
+uci set firewall.@defaults[0].flow_offloading='1'
+uci commit firewall
+
+# 5. 加大 dnsmasq 本地 DNS 缓存 (国内解析毫秒级响应)
+uci set dhcp.@dnsmasq[0].cachesize='4096'
+uci commit dhcp
+
+# 6. CPU 调速策略锁定性能模式 (Performance)
+uci -q set cpufreq.@settings[0].governor='performance'
+uci commit cpufreq
+
+# 7. 优化 nlbwmon 流量统计 (监控 10.0.0.0/24 并持久化落盘至 eMMC 节省内存)
+mkdir -p /etc/nlbwmon
+uci -q set nlbwmon.@nlbwmon[0].local_network='10.0.0.0/24'
+uci -q set nlbwmon.@nlbwmon[0].database_directory='/etc/nlbwmon'
+uci -q commit nlbwmon
+
+# 8. 国内高精度 NTP 时间同步服务器 (保障 sing-box / TLS / Reality 握手)
+uci -q delete system.ntp.server
+uci add_list system.ntp.server='ntp1.aliyun.com'
+uci add_list system.ntp.server='ntp2.aliyun.com'
+uci add_list system.ntp.server='time1.cloud.tencent.com'
+uci commit system
+
+exit 0

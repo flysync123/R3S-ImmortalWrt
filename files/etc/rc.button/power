@@ -1,0 +1,6 @@
+#!/bin/sh
+[ "$ACTION" = "released" ] && {
+    logger "LTS Power button pressed, executing safe shutdown..."
+    sync
+    poweroff
+}
