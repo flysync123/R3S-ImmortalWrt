@@ -14,21 +14,18 @@ env:
   TARGET: "rockchip"                      # 目标 SoC 架构大类（Rockchip 瑞芯微系列）
   SUBTARGET: "armv8"                      # 目标子架构（64 位 ARMv8）
   PROFILE: "friendlyarm_nanopi-r3s"       # 官方设备唯一标识符（NanoPi R3S / R3S LTS 专属 Profile）
-  ROOTFS_PARTSIZE: "4096"                 # 根分区大小：直接分配 4096MB (4GB)，初次开机还会自动扩满 32GB eMMC
+  ROOTFS_PARTSIZE: "4096"                 # 根分区大小：直接分配 4096MB (4GB)
 
   # ----------------------------------------------------------------------------
-  # 预装软件包列表：精选 1GB 内存最优解，集成 HomeProxy+sing-box，剔除 OpenClash/Docker 内存大户
+  # 增量软件包列表：精选 1GB 内存最优解，集成 HomeProxy+sing-box 与底层优化驱动
+  # 基础底层依赖（base-files、firewall4 等）ImageBuilder 会自动包含，此处只需声明增量插件
   # ----------------------------------------------------------------------------
   PACKAGES: >-
-    apk-openssl autocore automount base-files block-mount ca-bundle ca-certificates
-    curl default-settings-chn dnsmasq-full dropbear e2fsprogs fdisk firewall4 fstools
-    htop kmod-gpio-button-hotplug kmod-nf-nathelper kmod-nft-offload kmod-nft-tproxy
-    kmod-r8169 kmod-tcp-bbr kmod-tun libc libgcc libustream-openssl logd luci
-    luci-app-cpufreq luci-app-homeproxy luci-app-nlbwmon luci-i18n-base-zh-cn
-    luci-i18n-cpufreq-zh-cn luci-i18n-homeproxy-zh-cn luci-i18n-nlbwmon-zh-cn
-    mkf2fs mtd netifd nftables nlbwmon odhcp6c odhcpd-ipv6only partx-utils ppp
-    ppp-mod-pppoe procd-ujail r8169-firmware sing-box uboot-envtools uci uclient-fetch
-    urandom-seed urngd zram-swap
+    luci luci-app-homeproxy sing-box zram-swap kmod-tcp-bbr kmod-r8169 r8169-firmware
+    kmod-gpio-button-hotplug kmod-nft-offload kmod-nft-tproxy luci-app-cpufreq
+    luci-app-nlbwmon luci-i18n-base-zh-cn luci-i18n-cpufreq-zh-cn
+    luci-i18n-homeproxy-zh-cn luci-i18n-nlbwmon-zh-cn htop curl fdisk e2fsprogs
+    partx-utils autocore default-settings-chn
 
 # ==============================================================================
 # 构建任务定义
@@ -61,14 +58,11 @@ jobs:
       - name: 执行 ImageBuilder 固件打包 (含 files 优化注入)
         run: |
           cd ib
-          # 将当前仓库内的 files/ 目录拷贝到 ImageBuilder 根目录下，打包时自动覆盖进固件 RootFS
-          [ -d "$GITHUB_WORKSPACE/files" ] && cp -r "$GITHUB_WORKSPACE/files" ./files
-
-          # 核心打包命令：组装指定设备、指定软件包、指定根分区大小及自定义配置
+          # 核心打包命令：组装指定设备、增量软件包、指定根分区大小及自定义配置目录
           make image PROFILE="${{ env.PROFILE }}" \
                      PACKAGES="${{ env.PACKAGES }}" \
                      ROOTFS_PARTSIZE="${{ env.ROOTFS_PARTSIZE }}" \
-                     FILES="files"
+                     FILES="$GITHUB_WORKSPACE/files"
 
       # 4. 提取生成的最终固件、sysupgrade 升级包与 SHA256 校验和文件
       - name: 整理发布固件与生成日期标签
