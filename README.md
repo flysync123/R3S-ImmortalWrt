@@ -27,18 +27,20 @@
 * 🔌 **开箱即用体验**：
   * 默认 LAN 口后台管理 IP 为 **`10.0.0.1`**（避免与光猫 192.168.1.1 产生冲突）。
   * 内置开机自动识别并无损扩满 **32GB eMMC** 根分区。
+  * 内置 `/usr/bin/emmc-install` 终端一键刷机迁移工具（支持 TF 启动下一键将固件烧入 eMMC）。
   * 适配 R3S LTS 机身**物理电源按键**（按下释放触发 `sync` 安全刷盘并关机）。
 
 ---
 
-## 🛠️ 构建方式（两种 Actions 工作流）
+## 🛠️ 构建方式（三种 Actions 工作流）
 
-在仓库的 [Actions 页面](../../actions) 支持选择以下两种构建方式：
+在仓库的 [Actions 页面](../../actions) 支持自由选择以下构建方式：
 
 | 构建工作流 | 构建方式 | 预计耗时 | 特点与适用场景 |
 | :--- | :--- | :---: | :--- |
 | **`Build ImmortalWrt 25.12.1 for NanoPi R3S`** | **ImageBuilder 极速打包** | ⚡ **1 ~ 2 分钟** | **日常最推荐！** 基于官方预编译稳定二进制快速组装，打包极速，零报错风险。 |
-| **`Build ImmortalWrt from Source (Full Build)`** | **全源码交叉编译** | ⏳ **1.5 ~ 2.5 小时** | 完整编译 Linux 内核及所有软件包，支持自由选择源码分支（如 `openwrt-25.12` / `master`）。 |
+| **`Build ImmortalWrt (sbwml-style Modular Build)`** | **sbwml 模块化全源码编译** | ⏳ **1.5 ~ 2.5 小时** | 采用 sbwml 解耦架构，通过 `scripts/` 目录分步执行 Feeds 配置、包微调与 `.config` 依赖展开。 |
+| **`Build ImmortalWrt from Source (Full Build)`** | **标准全源码交叉编译** | ⏳ **1.5 ~ 2.5 小时** | 完整编译 Linux 内核及所有软件包，支持自由选择源码分支（如 `openwrt-25.12` / `master`）。 |
 
 ---
 
@@ -55,7 +57,7 @@
 
 1. **首次刷入 32GB eMMC**：
    * **方式 A (推荐)**：使用友善官方的 eFlasher TF 卡启动，在浏览器访问 `http://<开发板IP>:8080` 的 **eMMC 刷机助手网页界面** 上传固件一键烧录。
-   * **方式 B (命令行)**：将固件刷入 TF 卡启动后，通过终端执行 `zcat /tmp/firmware.img.gz | dd of=/dev/mmcblk0 bs=4M conv=fsync` 写入 eMMC。
+   * **方式 B (CLI 极速刷机)**：将固件刷入 TF 卡开机后，通过终端执行 `emmc-install /tmp/firmware.img.gz` 即可全自动完成烧录。
    * *烧录完成后拔出 TF 卡，即可从 32GB eMMC 极速启动。*
 2. **首次登录后台**：
    * 浏览器访问：**`http://10.0.0.1`**
@@ -68,16 +70,20 @@
 ```text
 .
 ├── .github/workflows/
-│   ├── build-r3s.yml             # ImageBuilder 极速云打包工作流 (1~2分钟)
-│   └── build-source-r3s.yml      # 全源码交叉编译工作流 (1.5~2.5小时)
+│   ├── build-r3s.yml             # 1. ImageBuilder 极速云打包 (1~2分钟)
+│   ├── build-sbwml-r3s.yml       # 2. sbwml 模块化全源码编译 (1.5~2.5小时)
+│   └── build-source-r3s.yml      # 3. 标准全源码交叉编译 (1.5~2.5小时)
+├── scripts/                      # sbwml 模块化编译脚本
+│   ├── 01-prepare-feeds.sh       # Step 1: 自定义 Feeds 源配置
+│   ├── 02-prepare-package.sh     # Step 2: 软件包微调与默认 IP 注入
+│   └── 03-custom-config.sh       # Step 3: R3S 目标硬件 .config 生成
 ├── files/                        # 编译期直接固化打入固件的优化文件
-│   └── etc/
-│       ├── rc.button/
-│       │   └── power             # LTS 物理按键安全关机脚本
-│       ├── sysctl.d/
-│       │   └── 99-custom.conf    # BBR / 7.5MB UDP 缓冲 / conntrack / swappiness
-│       └── uci-defaults/
-│           └── 99-r3s-optimize   # 开机自销毁初始化 (10.0.0.1 / 全盘扩容 / 流分载等)
+│   ├── etc/
+│   │   ├── rc.button/power       # LTS 物理按键安全关机脚本
+│   │   ├── sysctl.d/99-custom.conf # BBR / 7.5MB UDP 缓冲 / conntrack / swappiness
+│   │   └── uci-defaults/99-r3s-optimize # 开机自销毁初始化 (10.0.0.1 / 全盘扩容 / 流分载)
+│   └── usr/bin/
+│       └── emmc-install          # 终端 eMMC 一键刷写迁移工具
 └── README.md
 ```
 
@@ -86,6 +92,7 @@
 ## 🤝 致谢与参考
 
 * [ImmortalWrt 官方项目](https://github.com/immortalwrt/immortalwrt)
+* [sbwml/builder 项目](https://github.com/sbwml/builder)
 * [FriendlyElec 友善之臂 Wiki](https://wiki.friendlyelec.com/wiki/index.php/NanoPi_R3S/zh)
 * [OpenWrt 项目](https://openwrt.org/)
 * [P3TERX/Actions-OpenWrt](https://github.com/P3TERX/Actions-OpenWrt)
