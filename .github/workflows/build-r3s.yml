@@ -71,24 +71,31 @@ jobs:
                      FILES="files"
 
       # 4. 提取生成的最终固件、sysupgrade 升级包与 SHA256 校验和文件
-      - name: 整理发布固件
+      - name: 整理发布固件与生成日期标签
         run: |
           mkdir -p release_files
           cp ib/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*-sysupgrade.img.gz release_files/ || true
           cp ib/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*-squashfs-*.img.gz release_files/ || true
           cp ib/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/sha256sums release_files/ || true
 
+          # 设置东八区时区并生成以日期格式命名的 Release Tag (例如 ImmortalWrt-R3S-25.12.1-2026.08.31)
+          sudo timedatectl set-timezone "Asia/Shanghai"
+          TAG_DATE=$(date +'%Y.%m.%d')
+          echo "RELEASE_TAG=ImmortalWrt-R3S-${{ env.VERSION }}-${TAG_DATE}" >> $GITHUB_ENV
+          echo "RELEASE_TITLE=ImmortalWrt ${{ env.VERSION }} for NanoPi R3S (${TAG_DATE})" >> $GITHUB_ENV
+
       # 5. 上传固件至 GitHub Actions Artifacts（构建产物备份）
       - name: 上传构建固件到 Actions Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ImmortalWrt-R3S-${{ env.VERSION }}-Firmware
+          name: ${{ env.RELEASE_TAG }}
           path: release_files/*
 
-      # 6. 自动发布到 GitHub Releases 供永久直链下载
+      # 6. 自动发布到 GitHub Releases 供永久直链下载（以日期格式命名）
       - name: 发布至 GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ImmortalWrt-R3S-${{ env.VERSION }}-${{ github.run_id }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TITLE }}
           files: release_files/*
           token: ${{ secrets.GITHUB_TOKEN }}
