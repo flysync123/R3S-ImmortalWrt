@@ -12,6 +12,7 @@ on:
         description: 'OpenWrt 官方源码版本 Tag 或分支 (默认 v25.12.5)'
         required: true
         default: 'v25.12.5'
+        type: string
 
 env:
   REPO_URL: https://github.com/openwrt/openwrt.git

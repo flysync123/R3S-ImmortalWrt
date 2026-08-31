@@ -11,6 +11,7 @@ on:
         description: 'ImmortalWrt 源码分支 (如 openwrt-25.12 或 master)'
         required: true
         default: 'openwrt-25.12'
+        type: string
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
