@@ -15,18 +15,38 @@ echo -e "${GREEN}======================================================${PLAIN}"
 echo -e "${GREEN}    NanoPi R3S LTS - eMMC 一键刷机迁移工具 (32GB)      ${PLAIN}"
 echo -e "${GREEN}======================================================${PLAIN}"
 
-# 1. 检查当前是否从 TF 卡启动
-CURRENT_ROOT=$(mount | grep ' / ' | awk '{print $1}')
-if echo "$CURRENT_ROOT" | grep -q 'mmcblk0'; then
-    echo -e "${YELLOW}[提示] 当前系统已经在 eMMC (/dev/mmcblk0) 上运行！无需二次刷入。${PLAIN}"
-    exit 0
+# 1. 智能定位板载 eMMC 块设备 (通过 sysfs 读取底层硬件介质类型 MMC vs SD)
+EMMC_DEV=""
+for dev in /sys/block/mmcblk*; do
+    if [ -f "$dev/device/type" ]; then
+        TYPE=$(cat "$dev/device/type" 2>/dev/null || true)
+        if [ "$TYPE" = "MMC" ]; then
+            DEV_NAME=$(basename "$dev")
+            EMMC_DEV="/dev/$DEV_NAME"
+            break
+        fi
+    fi
+done
+
+# 如果 sysfs 未识别到，则按常规优先级检索 /dev/mmcblk0 或 /dev/mmcblk1
+if [ -z "$EMMC_DEV" ]; then
+    if [ -b "/dev/mmcblk0" ]; then
+        EMMC_DEV="/dev/mmcblk0"
+    elif [ -b "/dev/mmcblk1" ]; then
+        EMMC_DEV="/dev/mmcblk1"
+    fi
 fi
 
-# 2. 定位板载 eMMC 块设备
-EMMC_DEV="/dev/mmcblk0"
-if [ ! -b "$EMMC_DEV" ]; then
-    echo -e "${RED}[错误] 未检测到板载 eMMC 设备 ($EMMC_DEV)！${PLAIN}"
+if [ -z "$EMMC_DEV" ] || [ ! -b "$EMMC_DEV" ]; then
+    echo -e "${RED}[错误] 未检测到板载 eMMC 块设备！${PLAIN}"
     exit 1
+fi
+
+# 2. 检查当前根文件系统是否直接运行于 eMMC 上
+CURRENT_ROOT=$(mount | grep ' / ' | awk '{print $1}')
+if echo "$CURRENT_ROOT" | grep -q "$EMMC_DEV"; then
+    echo -e "${YELLOW}[提示] 当前系统已经在 eMMC ($EMMC_DEV) 上运行！无需二次刷入。${PLAIN}"
+    exit 0
 fi
 
 # 3. 获取待写入的固件镜像路径

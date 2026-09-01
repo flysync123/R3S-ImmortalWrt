@@ -3,7 +3,7 @@ name: Build Customer (Official OpenWrt Base)
 # ==============================================================================
 # 触发机制：基于官方原版 OpenWrt 源码 + Customer 模块化现代构建流 (workflow_dispatch)
 # 核心优势：基于官方 OpenWrt 稳定基准，集成 -O3 编译压榨、Mold 极速链接、
-#           Go 1.24+ 工具链与 HomeProxy/Nikki/MosDNS/PassWall 全套生态
+#           Go 1.25+ 工具链与 HomeProxy/Nikki/MosDNS/PassWall 全套生态
 # ==============================================================================
 on:
   workflow_dispatch:

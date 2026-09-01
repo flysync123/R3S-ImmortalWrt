@@ -1,18 +1,18 @@
 #!/bin/bash
 # ==============================================================================
 # Customer OpenWrt Build System - Step 2: 软件包定制、工具链升级与系统参数 (DIY Part 2)
-# 作用：升级 Go 1.24、清理冲突包、克隆独立插件、配置 IP/主机名/时区与注入 files/ 目录
+# 作用：升级 Go 1.25、清理冲突包、克隆独立插件、配置 IP/主机名/时区与注入 files/ 目录
 # ==============================================================================
 
 set -e
 
 echo "=== [Customer Step 2] 正在进行工具链升级、依赖去重与系统级参数定制 ==="
 
-# 1. 升级与替换 Golang 编译工具链至最新 1.24.x 分支（确保 sing-box / mosdns / nikki 编译兼容性）
+# 1. 升级与替换 Golang 编译工具链至最新 25.x 分支（确保 sing-box / mosdns / nikki 编译兼容性，满足 go >= 1.25.5 依赖）
 if [ -d "feeds/packages/lang/golang" ]; then
-    echo "正在替换 Golang 编译环境为 1.24.x..."
+    echo "正在替换 Golang 编译环境为 25.x (Go 1.25+)..."
     rm -rf feeds/packages/lang/golang
-    git clone --depth 1 https://github.com/sbwml/packages_lang_golang -b 24.x feeds/packages/lang/golang
+    git clone --depth 1 https://github.com/sbwml/packages_lang_golang -b 25.x feeds/packages/lang/golang
 fi
 
 # 2. 清除官方基础源中的旧版/冲突包定义（避免与 passwall_packages / mosdns 源产生重复声明冲突）
@@ -56,6 +56,7 @@ if [ -f "$CONFIG_GEN" ]; then
 
     # 设置默认时区为中国上海 (Asia/Shanghai / CST-8)
     sed -i "s/'UTC'/'CST-8'\n\t\tset system.@system[-1].zonename='Asia\/Shanghai'/g" "$CONFIG_GEN"
+    sed -i "s/'GMT0'/'CST-8'\n\t\tset system.@system[-1].zonename='Asia\/Shanghai'/g" "$CONFIG_GEN"
     echo "✔ 默认时区已设置为 Asia/Shanghai"
 fi
 
