@@ -2,8 +2,8 @@ name: Build Customer (Official OpenWrt Base)
 
 # ==============================================================================
 # 触发机制：基于官方原版 OpenWrt 源码 + Customer 模块化现代构建流 (workflow_dispatch)
-# 核心优势：基于官方 OpenWrt 稳定基准，集成 -O3 编译压榨、Mold 极速链接、
-#           Go 1.25+ 工具链与 HomeProxy/Nikki/MosDNS/PassWall 全套生态
+# 核心优势：基于官方 OpenWrt 稳定基准，集成 Mold 极速链接、
+#           现代 Go 工具链与 HomeProxy/Nikki/MosDNS/PassWall 全套生态
 # ==============================================================================
 on:
   workflow_dispatch:
@@ -48,6 +48,12 @@ jobs:
           sudo -E apt-get -qq autoremove --purge
           sudo -E apt-get -qq clean
           sudo timedatectl set-timezone "$TZ"
+
+          # 开启 8GB 虚拟内存 Swap，杜绝 Go / sing-box / mihomo 多核并发编译 OOM 崩溃
+          sudo fallocate -l 8G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
 
       # 3. 克隆 OpenWrt 官方原版源码 (upstream openwrt.git)
       - name: 克隆 OpenWrt 官方源码

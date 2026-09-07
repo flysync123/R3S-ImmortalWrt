@@ -69,12 +69,21 @@ echo -e "${YELLOW}[警告] 写入将清除 eMMC 中的所有数据，请确保�
 
 # 4. 执行写入
 echo -e "${GREEN}[3/4] 正在解压并写入 eMMC，请稍候...${PLAIN}"
+DD_STATUS=""
+if dd --help 2>&1 | grep -q 'progress'; then
+    DD_STATUS="status=progress"
+fi
+
 if echo "$IMG_FILE" | grep -q '\.gz$'; then
-    zcat "$IMG_FILE" | dd of="$EMMC_DEV" bs=4M conv=fsync status=progress
+    gzip -dc "$IMG_FILE" | dd of="$EMMC_DEV" bs=4M conv=fsync $DD_STATUS
 elif echo "$IMG_FILE" | grep -q '\.zst$'; then
-    zstd -d -c "$IMG_FILE" | dd of="$EMMC_DEV" bs=4M conv=fsync status=progress
+    if ! command -v zstd >/dev/null 2>&1; then
+        echo -e "${RED}[错误] 系统未安装 zstd 解压工具，请先运行: apk add zstd 或 opkg install zstd${PLAIN}"
+        exit 1
+    fi
+    zstd -d -c "$IMG_FILE" | dd of="$EMMC_DEV" bs=4M conv=fsync $DD_STATUS
 else
-    dd if="$IMG_FILE" of="$EMMC_DEV" bs=4M conv=fsync status=progress
+    dd if="$IMG_FILE" of="$EMMC_DEV" bs=4M conv=fsync $DD_STATUS
 fi
 
 sync

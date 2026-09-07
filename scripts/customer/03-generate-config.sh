@@ -20,11 +20,9 @@ CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r3s=y
 CONFIG_TARGET_ROOTFS_PARTSIZE=4096
 
 # ------------------------------------------------------------------------------
-# 2. 编译器级性能压榨与极速链接器优化 (-O3 + Cortex-A55 硬件微架构优化 & Mold 极速链接)
+# 2. 现代链接器优化 (Mold 极速链接)
 # ------------------------------------------------------------------------------
 CONFIG_DEVEL=y
-CONFIG_OPTIMIZE_FLAG="-O3"
-CONFIG_EXTRA_OPTIMIZATION="-mcpu=cortex-a55+crypto+crc -pipe"
 CONFIG_USE_MOLD=y
 
 # ------------------------------------------------------------------------------
@@ -36,12 +34,15 @@ CONFIG_PACKAGE_luci-app-argon-config=y
 CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-argon-config-zh-cn=y
 CONFIG_LUCI_LANG_zh_Hans=y
-CONFIG_PACKAGE_default-settings=y
 CONFIG_PACKAGE_autocore-arm=y
 
 # ------------------------------------------------------------------------------
 # 4. 现代代理分流、DNS 加速与打洞组件生态
 # ------------------------------------------------------------------------------
+# 解决 PassWall 依赖与基础 dnsmasq 冲突
+CONFIG_PACKAGE_dnsmasq=n
+CONFIG_PACKAGE_dnsmasq-full=y
+
 # HomeProxy + sing-box 核心
 CONFIG_PACKAGE_luci-app-homeproxy=y
 CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=y

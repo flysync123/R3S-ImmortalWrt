@@ -50,6 +50,12 @@ jobs:
           sudo -E apt-get -qq clean
           sudo timedatectl set-timezone "$TZ"
 
+          # 开启 8GB 虚拟内存 Swap，杜绝多核并发编译 OOM 崩溃
+          sudo fallocate -l 8G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
       # 3. 克隆 ImmortalWrt 官方源码
       - name: 克隆 ImmortalWrt 源码
         run: |
@@ -79,6 +85,8 @@ jobs:
           CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
           CONFIG_PACKAGE_luci-i18n-argon-config-zh-cn=y
           CONFIG_LUCI_LANG_zh_Hans=y
+          CONFIG_PACKAGE_dnsmasq=n
+          CONFIG_PACKAGE_dnsmasq-full=y
           CONFIG_PACKAGE_luci-app-homeproxy=y
           CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=y
           CONFIG_PACKAGE_sing-box=y
@@ -98,6 +106,7 @@ jobs:
           CONFIG_PACKAGE_fdisk=y
           CONFIG_PACKAGE_e2fsprogs=y
           CONFIG_PACKAGE_partx-utils=y
+          CONFIG_PACKAGE_zstd=y
           CONFIG_PACKAGE_autocore=y
           CONFIG_PACKAGE_default-settings-chn=y
           CONFIG_PACKAGE_luci-app-openclash=n
@@ -112,7 +121,8 @@ jobs:
       - name: 注入自定义 files 配置
         run: |
           if [ -d "$GITHUB_WORKSPACE/files" ]; then
-            cp -r "$GITHUB_WORKSPACE/files" openwrt/files
+            mkdir -p openwrt/files
+            cp -rf "$GITHUB_WORKSPACE/files/." openwrt/files/
           fi
 
       # 7. 预下载依赖包 (DL)

@@ -26,7 +26,7 @@ env:
     kmod-gpio-button-hotplug kmod-nft-offload kmod-nft-tproxy luci-app-cpufreq
     luci-app-nlbwmon luci-i18n-base-zh-cn luci-i18n-cpufreq-zh-cn
     luci-i18n-homeproxy-zh-cn luci-i18n-nlbwmon-zh-cn htop curl fdisk e2fsprogs
-    partx-utils autocore default-settings-chn
+    partx-utils zstd autocore default-settings-chn
 
 # ==============================================================================
 # 构建任务定义
