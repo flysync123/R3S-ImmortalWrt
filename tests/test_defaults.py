@@ -7,6 +7,7 @@ No commands in this test access a router or the host's /etc configuration.
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -117,7 +118,22 @@ def base_config():
     }
 
 
+def rooted_script(script, root):
+    # Replace original router paths once. A Linux fixture root itself starts
+    # with /tmp/, so sequential replacements would also rewrite inserted text.
+    return re.sub(r"/etc/|/tmp/|/sysupgrade\.tgz\b",
+                  lambda match: root.rstrip("/") + match.group(0), script)
+
+
 class DefaultsTest(unittest.TestCase):
+    def test_linux_tmp_fixture_prefix_is_not_rewritten_twice(self):
+        source = "cat /etc/config/r3s /tmp/r3s-boot-state /sysupgrade.tgz"
+        self.assertEqual(
+            rooted_script(source, "/tmp/r3s-fixture"),
+            "cat /tmp/r3s-fixture/etc/config/r3s "
+            "/tmp/r3s-fixture/tmp/r3s-boot-state /tmp/r3s-fixture/sysupgrade.tgz",
+        )
+
     def test_initialization_marker_is_explicitly_preserved(self):
         keep = (REPO / 'files/lib/upgrade/keep.d/r3s-defaults').read_text().splitlines()
         self.assertIn('/etc/config/r3s', keep)
@@ -166,9 +182,7 @@ class DefaultsTest(unittest.TestCase):
         return json.loads(self.state.read_text())
 
     def root_script(self, path):
-        script = path.read_text(encoding="utf-8")
-        for old in ("/etc/", "/tmp/", "/sysupgrade.tgz"):
-            script = script.replace(old, self.root.as_posix() + old)
+        script = rooted_script(path.read_text(encoding="utf-8"), self.root.as_posix())
         target = self.root / path.name
         target.write_text(script, encoding="utf-8", newline="\n")
         return target
