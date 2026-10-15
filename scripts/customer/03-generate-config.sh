@@ -1,10 +1,23 @@
 #!/bin/bash
 # ==============================================================================
 # Customer OpenWrt Build System - Step 3: 硬件架构、内核加速与应用配置 (.config)
-# 作用：定义 NanoPi R3S 目标机型、-O3 性能优化、现代代理生态与内核模块
+# 作用：定义 NanoPi R3S 目标机型、代理应用与内核模块，并检查依赖解析结果
 # ==============================================================================
 
-set -e
+set -euo pipefail
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+TARGET=${TARGET:-rockchip}
+SUBTARGET=${SUBTARGET:-armv8}
+PROFILE=${PROFILE:-friendlyarm_nanopi-r3s}
+ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE:-4096}
+for value in "$TARGET" "$SUBTARGET" "$PROFILE"; do
+    [[ "$value" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "ERROR: 非法目标配置: $value" >&2; exit 1; }
+done
+[[ "$ROOTFS_PARTSIZE" =~ ^[0-9]+$ ]] && [ "$ROOTFS_PARTSIZE" -ge 128 ] || {
+    echo "ERROR: ROOTFS_PARTSIZE 必须是至少 128 MiB 的整数。" >&2
+    exit 1
+}
 
 echo "=== [Customer Step 3] 正在生成 NanoPi R3S 专属定制 .config 配置文件 ==="
 
@@ -12,12 +25,12 @@ cat > .config <<EOF
 # ------------------------------------------------------------------------------
 # 1. 目标平台与芯片架构定义 (Rockchip RK3566 / ARMv8 / FriendlyARM NanoPi R3S)
 # ------------------------------------------------------------------------------
-CONFIG_TARGET_rockchip=y
-CONFIG_TARGET_rockchip_armv8=y
-CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r3s=y
+CONFIG_TARGET_${TARGET}=y
+CONFIG_TARGET_${TARGET}_${SUBTARGET}=y
+CONFIG_TARGET_${TARGET}_${SUBTARGET}_DEVICE_${PROFILE}=y
 
-# 根分区大小：4096MB (4GB)
-CONFIG_TARGET_ROOTFS_PARTSIZE=4096
+# 根分区大小（MiB，由 ROOTFS_PARTSIZE 配置，默认 4096）
+CONFIG_TARGET_ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}
 
 # ------------------------------------------------------------------------------
 # 2. 现代链接器优化 (Mold 极速链接)
@@ -73,8 +86,7 @@ CONFIG_PACKAGE_luci-app-natmap=y
 CONFIG_PACKAGE_luci-i18n-natmap-zh-cn=y
 
 # WireGuard 安全隧道
-CONFIG_PACKAGE_luci-app-wireguard=y
-CONFIG_PACKAGE_luci-i18n-wireguard-zh-cn=y
+CONFIG_PACKAGE_luci-proto-wireguard=y
 CONFIG_PACKAGE_kmod-wireguard=y
 
 # ------------------------------------------------------------------------------
@@ -125,6 +137,8 @@ CONFIG_PACKAGE_fdisk=y
 CONFIG_PACKAGE_e2fsprogs=y
 CONFIG_PACKAGE_partx-utils=y
 CONFIG_PACKAGE_zstd=y
+CONFIG_PACKAGE_fwtool=y
+CONFIG_PACKAGE_jsonfilter=y
 
 # ------------------------------------------------------------------------------
 # 10. 显式屏蔽与剔除内存大户 (严禁在 1GB 内存设备上装载)
@@ -135,6 +149,8 @@ CONFIG_PACKAGE_docker=n
 CONFIG_PACKAGE_dockerd=n
 EOF
 
-# 自动补全所有依赖并验证
+# 自动补全所有依赖，并在未知包、依赖冲突或目标不支持时立即报错。
+cp .config .config.requested
 make defconfig
+bash "$SCRIPT_DIR/../build/check-config.sh" .config.requested .config
 echo "✔ [Customer] 全套 .config 配置生成并依赖展开完毕。"

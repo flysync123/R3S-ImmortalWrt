@@ -1,0 +1,19 @@
+# Runs just after 80_mount_root has mounted the writable root and restored
+# /sysupgrade.tgz or /tmp/sysupgrade.tar. Capture this before later boot scripts
+# clean up those archives. Existing installations without an R3S marker are
+# never assumed to be fresh merely because that marker is missing.
+# It must precede upstream's 82_config_generate, which creates network/system.
+r3s_capture_boot_state() {
+	local state='existing'
+	if [ -e /sysupgrade.tgz ] || [ -e /tmp/sysupgrade.tar ] ||
+	   [ -e /etc/.updated ] || [ -e /etc/uci-defaults/10_disable_services ]; then
+		state='restored'
+	elif [ ! -s /etc/config/network ] && [ ! -s /etc/config/system ] &&
+	   [ ! -e /etc/config/r3s ]; then
+		state='fresh'
+	fi
+	printf '%s\n' "$state" > /tmp/r3s-boot-state ||
+		logger -t r3s-defaults 'Cannot record boot state; keeping existing settings'
+}
+
+boot_hook_add preinit_main r3s_capture_boot_state

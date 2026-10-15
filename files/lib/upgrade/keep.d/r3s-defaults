@@ -1,0 +1,2 @@
+# Preserve initialization checkpoints during a normal keep-settings upgrade.
+/etc/config/r3s

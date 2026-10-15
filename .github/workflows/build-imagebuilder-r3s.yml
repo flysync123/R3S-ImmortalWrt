@@ -6,6 +6,10 @@ name: Build ImmortalWrt 25.12.2 for NanoPi R3S
 on:
   workflow_dispatch:
 
+concurrency:
+  group: r3s-imagebuilder-${{ github.ref }}
+  cancel-in-progress: false
+
 # ==============================================================================
 # 全局环境变量配置
 # ==============================================================================
@@ -15,6 +19,7 @@ env:
   SUBTARGET: "armv8"                      # 目标子架构（64 位 ARMv8）
   PROFILE: "friendlyarm_nanopi-r3s"       # 官方设备唯一标识符（NanoPi R3S / R3S LTS 专属 Profile）
   ROOTFS_PARTSIZE: "4096"                 # 根分区大小：直接分配 4096MB (4GB)
+  TZ: Asia/Shanghai
 
   # ----------------------------------------------------------------------------
   # 增量软件包列表：精选 1GB 内存最优解，集成 Argon 主题、HomeProxy+sing-box 与底层优化驱动
@@ -26,7 +31,7 @@ env:
     kmod-gpio-button-hotplug kmod-nft-offload kmod-nft-tproxy luci-app-cpufreq
     luci-app-nlbwmon luci-i18n-base-zh-cn luci-i18n-cpufreq-zh-cn
     luci-i18n-homeproxy-zh-cn luci-i18n-nlbwmon-zh-cn htop curl fdisk e2fsprogs
-    partx-utils zstd autocore default-settings-chn
+    partx-utils zstd autocore default-settings-chn fwtool jsonfilter
 
 # ==============================================================================
 # 构建任务定义
@@ -49,43 +54,45 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libncurses5-dev zlib1g-dev gawk git gettext libssl-dev xsltproc wget zstd
 
-          # 下载官方针对 rockchip/armv8 预编译的 ImageBuilder 归档包 (约几十 MB，毫秒级下载)
-          IB_URL="https://downloads.immortalwrt.org/releases/${{ env.VERSION }}/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/immortalwrt-imagebuilder-${{ env.VERSION }}-${{ env.TARGET }}-${{ env.SUBTARGET }}.Linux-x86_64.tar.zst"
-          wget -q $IB_URL -O ib.tar.zst
-          tar -I zstd -xf ib.tar.zst
-          mv immortalwrt-imagebuilder-* ib
+          # 先核对同一官方目录的 SHA256，再解压 ImageBuilder。
+          IB_BASE="https://downloads.immortalwrt.org/releases/$VERSION/targets/$TARGET/$SUBTARGET"
+          IB_ARCHIVE="immortalwrt-imagebuilder-$VERSION-$TARGET-$SUBTARGET.Linux-x86_64.tar.zst"
+          IB_URL="$IB_BASE/$IB_ARCHIVE"
+          wget -q "$IB_URL" -O "$IB_ARCHIVE"
+          wget -q "$IB_BASE/sha256sums" -O imagebuilder-official-sha256sums
+          awk -v filename="$IB_ARCHIVE" '$2 == filename || $2 == "*" filename {print; found++} END {if (found != 1) exit 1}' \
+            imagebuilder-official-sha256sums > imagebuilder.sha256
+          sha256sum --check --strict imagebuilder.sha256
+          tar -I zstd -xf "$IB_ARCHIVE"
+          mv "${IB_ARCHIVE%.tar.zst}" ib
+          # ImageBuilder 不会重新生成官方构建记录；另存并校验其基准信息。
+          mkdir -p imagebuilder-buildinfo
+          for metadata in config.buildinfo feeds.buildinfo version.buildinfo; do
+            wget -q "$IB_BASE/$metadata" -O "imagebuilder-buildinfo/$metadata"
+            awk -v filename="$metadata" '$2 == filename || $2 == "*" filename {print; found++} END {if (found != 1) exit 1}' \
+              imagebuilder-official-sha256sums >> imagebuilder-buildinfo/sha256sums
+          done
+          (cd imagebuilder-buildinfo && sha256sum --check --strict sha256sums)
+          echo "IB_URL=$IB_URL" >> "$GITHUB_ENV"
 
-      # 3. 注入仓库中的 files 目录（BBR/关机按键/10.0.0.1开机自动配置），并执行极速组装打包 (约1分钟)
+      # 3. 注入仓库中的 files 目录，并组装固件
       - name: 执行 ImageBuilder 固件打包 (含 files 优化注入)
         run: |
           cd ib
           # 核心打包命令：组装指定设备、增量软件包、指定根分区大小及自定义配置目录
-          make image PROFILE="${{ env.PROFILE }}" \
-                     PACKAGES="${{ env.PACKAGES }}" \
-                     ROOTFS_PARTSIZE="${{ env.ROOTFS_PARTSIZE }}" \
+          make image PROFILE="$PROFILE" \
+                     PACKAGES="$PACKAGES" \
+                     ROOTFS_PARTSIZE="$ROOTFS_PARTSIZE" \
                      FILES="$GITHUB_WORKSPACE/files"
 
-      # 4. 提取生成的最终固件、规范重命名与生成 SHA256 校验和文件
-      - name: 整理发布固件与生成日期标签
+      # 4. 按路线及运行编号命名，保存配置、包清单和来源信息
+      - name: 整理发布固件与构建记录
+        env:
+          BUILD_DIR: ib
+          RELEASE_ROUTE: ImageBuilder
+          RELEASE_VERSION: ${{ env.VERSION }}
         run: |
-          sudo timedatectl set-timezone "Asia/Shanghai"
-          TAG_DATE=$(date +'%Y.%m.%d')
-          echo "RELEASE_TAG=ImmortalWrt-R3S-${{ env.VERSION }}-${TAG_DATE}" >> $GITHUB_ENV
-          echo "RELEASE_TITLE=ImmortalWrt ${{ env.VERSION }} for NanoPi R3S (${TAG_DATE})" >> $GITHUB_ENV
-
-          mkdir -p release_files
-          cd ib/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}
-          for file in *friendlyarm_nanopi-r3s*.img.gz; do
-            if [ -f "$file" ]; then
-              fs_type="squashfs"
-              echo "$file" | grep -q "ext4" && fs_type="ext4"
-              new_name="ImmortalWrt-${{ env.VERSION }}-NanoPi-R3S-${fs_type}-sysupgrade-${TAG_DATE}.img.gz"
-              cp -f "$file" "$GITHUB_WORKSPACE/release_files/$new_name"
-            fi
-          done
-
-          cd "$GITHUB_WORKSPACE/release_files"
-          sha256sum *.img.gz > sha256sums.txt
+          bash scripts/build/collect-release.sh
 
       # 5. 上传固件至 GitHub Actions Artifacts（构建产物备份）
       - name: 上传构建固件到 Actions Artifacts
@@ -93,8 +100,9 @@ jobs:
         with:
           name: ${{ env.RELEASE_TAG }}
           path: release_files/*
+          if-no-files-found: error
 
-      # 6. 自动发布到 GitHub Releases 供永久直链下载（以日期格式命名）
+      # 6. 自动发布到 GitHub Releases
       - name: 发布至 GitHub Releases
         uses: softprops/action-gh-release@v2
         with:

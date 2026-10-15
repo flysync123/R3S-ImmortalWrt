@@ -1,85 +1,182 @@
 #!/bin/sh
-# ==============================================================================
-# NanoPi R3S LTS 系统开机自销毁初始化配置脚本
-# 路径：/etc/uci-defaults/99-r3s-optimize
-# 原理：OpenWrt 在初次开机、网络服务启动前会自动执行此目录下的所有脚本；
-#       执行完毕返回 0 后，系统会自动将其从磁盘中删除，完全不留运行时垃圾。
-# ==============================================================================
+# R3S defaults run before network services. Success removes this script; failures
+# must leave it available for the next boot. Never change /etc/shadow here.
+# /etc/config/r3s is explicitly included in /lib/upgrade/keep.d/r3s-defaults.
 
-# ------------------------------------------------------------------------------
-# 1. 设置默认后台 root 密码为 password
-# ------------------------------------------------------------------------------
-echo -e "password\npassword" | passwd root 2>/dev/null || true
+log() {
+	logger -t r3s-defaults -- "$*" 2>/dev/null || printf 'r3s-defaults: %s\n' "$*" >&2
+}
 
-# ------------------------------------------------------------------------------
-# 2. 修改默认 LAN 口后台管理 IP 为 10.0.0.1 (防与光猫默认 192.168.1.1 产生 IP 冲突)
-# 核心注意：ImmortalWrt / OpenWrt 25.12 的 netifd 要求必须显式声明 /24 CIDR 前缀或 netmask，
-#           否则网卡会被降级识别为 10.0.0.1/32 单机掩码，导致 dnsmasq 认为无可用网段而停发 DHCP 租约！
-# ------------------------------------------------------------------------------
-uci -q delete network.lan.ipaddr
-uci -q add_list network.lan.ipaddr='10.0.0.1/24'
-uci -q set network.lan.netmask='255.255.255.0'
-uci -q commit network || true
+fail() {
+	log "ERROR: $*; script retained for the next boot"
+	exit 1
+}
 
-# 显式配置 dnsmasq 的 LAN DHCP 动态地址池 (10.0.0.100 ~ 10.0.0.249，租期 12h)
-uci -q set dhcp.lan.start='100'
-uci -q set dhcp.lan.limit='150'
-uci -q set dhcp.lan.leasetime='12h'
-uci -q commit dhcp || true
+checked_uci() {
+	uci -q "$@" || { log "UCI failed: $*"; return 1; }
+}
 
-# ------------------------------------------------------------------------------
-# 3. 配置系统主机名与时区 (NanoPi-R3S / Asia/Shanghai / CST-8)
-# ------------------------------------------------------------------------------
-uci -q set system.@system[0].hostname='NanoPi-R3S'
-uci -q set system.@system[0].zonename='Asia/Shanghai'
-uci -q set system.@system[0].timezone='CST-8'
-uci -q commit system || true
+configure_network() {
+	if uci -q get network.lan.ipaddr >/dev/null; then
+		checked_uci delete network.lan.ipaddr || return 1
+	fi
+	checked_uci set network.lan.proto='static' &&
+	checked_uci add_list network.lan.ipaddr='10.0.0.1/24' &&
+	checked_uci set network.lan.netmask='255.255.255.0' &&
+	checked_uci set network.globals.packet_steering='1'
+}
 
-# ------------------------------------------------------------------------------
-# 4. 开启网络软中断负载均衡 (Packet Steering / RPS)
-# 原理：硬中断已被官方绑在 CPU1/CPU2，开 RPS 让软中断处理平摊到 CPU0/CPU3，四核负载完全均衡
-# ------------------------------------------------------------------------------
-uci -q set network.globals.packet_steering='1'
-uci -q commit network || true
+configure_dhcp() {
+	checked_uci set dhcp.lan.start='100' &&
+	checked_uci set dhcp.lan.limit='150' &&
+	checked_uci set dhcp.lan.leasetime='12h' &&
+	checked_uci set dhcp.@dnsmasq[0].cachesize='4096'
+}
 
-# ------------------------------------------------------------------------------
-# 5. 开启软件流量分载 (Flow Offloading)
-# 原理：RK3566 无硬件 NAT 引擎，开启软件卸载后可降低 NAT 转发 CPU 占用 30%~50%
-# ------------------------------------------------------------------------------
-uci -q set firewall.@defaults[0].flow_offloading='1'
-uci -q commit firewall || true
+configure_system() {
+	checked_uci set system.@system[0].hostname='NanoPi-R3S' &&
+	checked_uci set system.@system[0].zonename='Asia/Shanghai' &&
+	checked_uci set system.@system[0].timezone='CST-8' || return 1
+	if uci -q get system.ntp.server >/dev/null; then
+		checked_uci delete system.ntp.server || return 1
+	fi
+	checked_uci add_list system.ntp.server='ntp1.aliyun.com' &&
+	checked_uci add_list system.ntp.server='ntp2.aliyun.com' &&
+	checked_uci add_list system.ntp.server='time1.cloud.tencent.com'
+}
 
-# ------------------------------------------------------------------------------
-# 6. 加大 dnsmasq 本地 DNS 缓存大小至 4096 条
-# 作用：国内高频访问域名全部在路由器内存中秒级命中，大幅降低页面首包延迟
-# ------------------------------------------------------------------------------
-uci -q set dhcp.@dnsmasq[0].cachesize='4096'
-uci -q commit dhcp || true
+configure_firewall() {
+	checked_uci set firewall.@defaults[0].flow_offloading='1'
+}
 
-# ------------------------------------------------------------------------------
-# 7. CPU 调速策略锁定性能模式 (Performance Governor)
-# 作用：消除 CPU 动态升频带来的瞬时延迟，保障小包千兆线速转发与代理加解密流畅
-# ------------------------------------------------------------------------------
-uci -q set cpufreq.@settings[0].governor='performance'
-uci -q commit cpufreq 2>/dev/null || true
+configure_nlbwmon() {
+	local entry old_networks
+	# Interface names resolve both IPv4 and IPv6 subnets at service start.
+	# Preserve explicit IPv6 ranges supplied by the upstream package.
+	old_networks="$(uci -q get nlbwmon.@nlbwmon[0].local_network)"
+	if [ -n "$old_networks" ]; then
+		checked_uci delete nlbwmon.@nlbwmon[0].local_network || return 1
+	fi
+	checked_uci add_list nlbwmon.@nlbwmon[0].local_network='lan' || return 1
+	for entry in $old_networks; do
+		case "$entry" in
+			*:*) checked_uci add_list "nlbwmon.@nlbwmon[0].local_network=$entry" || return 1 ;;
+		esac
+	done
+	mkdir -p /etc/nlbwmon || return 1
+	checked_uci set nlbwmon.@nlbwmon[0].database_directory='/etc/nlbwmon'
+}
 
-# ------------------------------------------------------------------------------
-# 8. 优化 nlbwmon 流量统计 (监控 10.0.0.0/24 并将数据库持久化落盘至 eMMC)
-# 作用：避免将流量统计数据常驻在紧凑的 1GB 内存中，节省内存并防止重启丢失统计数据
-# ------------------------------------------------------------------------------
-mkdir -p /etc/nlbwmon
-uci -q set nlbwmon.@nlbwmon[0].local_network='10.0.0.0/24'
-uci -q set nlbwmon.@nlbwmon[0].database_directory='/etc/nlbwmon'
-uci -q commit nlbwmon 2>/dev/null || true
+# Save the checkpoint before committing the package. If power is lost between
+# these writes, prefer keeping the current configuration over reapplying a
+# default that could replace a user's later changes. That conservative window
+# may leave a first-boot default unapplied and requires checking the configuration.
+run_phase() {
+	local phase="$1" package="$2" function="$3"
+	[ "$(uci -q get "r3s.state.$phase")" = '1' ] && return 0
+	if ! "$function"; then
+		uci -q revert "$package"
+		fail "Cannot configure $package"
+	fi
+	checked_uci set "r3s.state.$phase=1" && checked_uci commit r3s || {
+		uci -q revert r3s
+		uci -q revert "$package"
+		fail "Cannot checkpoint $package"
+	}
+	if ! checked_uci commit "$package"; then
+		uci -q revert "$package"
+		if ! checked_uci delete "r3s.state.$phase" || ! checked_uci commit r3s; then
+			uci -q revert r3s
+			log "Cannot clear $package checkpoint; retaining the current configuration on retry"
+		fi
+		fail "Cannot commit $package"
+	fi
+}
 
-# ------------------------------------------------------------------------------
-# 9. 配置国内高精度 NTP 时间同步服务器 (阿里云 / 腾讯云)
-# 作用：保障 sing-box 的 TLS / VLESS-Reality 握手时间戳精准，避免因时间偏移导致握手失败
-# ------------------------------------------------------------------------------
-uci -q delete system.ntp.server
-uci -q add_list system.ntp.server='ntp1.aliyun.com'
-uci -q add_list system.ntp.server='ntp2.aliyun.com'
-uci -q add_list system.ntp.server='time1.cloud.tencent.com'
-uci -q commit system || true
+migrate_nlbwmon() {
+	local scalar entry old_networks exported
+	# UCI get hides option/list type. Only repair scalar values: valid lists and
+	# customized database locations on existing installations stay unchanged.
+	exported="$(uci -q export nlbwmon)" || { log 'Cannot read nlbwmon configuration'; return 1; }
+	scalar="$(printf '%s\n' "$exported" | awk '
+		/^config / {
+			target = ($2 == "nlbwmon" && !seen)
+			if (target) seen = 1
+		}
+		target && $1 == "option" && $2 == "local_network" { print; exit }
+	')"
+	[ -n "$scalar" ] || return 0
+	old_networks="$(uci -q get nlbwmon.@nlbwmon[0].local_network)"
+	[ -n "$old_networks" ] || return 0
+	checked_uci delete nlbwmon.@nlbwmon[0].local_network || return 1
+	# Treat whitespace-separated scalar networks as individual list entries.
+	# Only the known obsolete R3S subnet is replaced with its LAN interface.
+	set -f
+	for entry in $old_networks; do
+		[ "$entry" = '10.0.0.0/24' ] && entry='lan'
+		checked_uci add_list "nlbwmon.@nlbwmon[0].local_network=$entry" || { set +f; return 1; }
+	done
+	set +f
+	checked_uci commit nlbwmon
+}
 
+command -v uci >/dev/null 2>&1 || fail 'uci is unavailable'
+
+# The preinit hook records restore state before another defaults script can
+# remove the restore archive. Missing/unknown state always preserves settings.
+boot_state="$(cat /tmp/r3s-boot-state 2>/dev/null)"
+mode="$(uci -q get r3s.state.mode)"
+# A restored backup wins even over an unfinished first-boot checkpoint.
+if [ "$boot_state" = 'restored' ] || [ -e /etc/.updated ] ||
+   [ -e /sysupgrade.tgz ] || [ -e /tmp/sysupgrade.tar ] ||
+   [ -e /etc/uci-defaults/10_disable_services ]; then
+	mode='existing'
+elif [ "$mode" = 'fresh' ] && [ "$boot_state" != 'fresh' ] &&
+     [ "$(uci -q get r3s.state.defaults_version)" != '1' ]; then
+	# The prior first boot stopped early. A later boot cannot tell whether the
+	# user has since changed LAN/DHCP, so do not resume applying fresh defaults.
+	log 'First-boot defaults were interrupted; keeping current settings. Check LAN, DHCP and system defaults manually.'
+	mode='existing'
+elif [ -z "$mode" ]; then
+	mode='existing'
+	[ "$boot_state" = 'fresh' ] && mode='fresh'
+fi
+if [ "$(uci -q get r3s.state.mode)" != "$mode" ]; then
+	[ -e /etc/config/r3s ] || : > /etc/config/r3s || fail 'Cannot create initialization state'
+	checked_uci set r3s.state='r3s' &&
+	checked_uci set "r3s.state.mode=$mode" &&
+	checked_uci commit r3s || { uci -q revert r3s; fail 'Cannot save initialization state'; }
+fi
+
+if [ "$mode" = 'fresh' ] && [ "$(uci -q get r3s.state.defaults_version)" != '1' ]; then
+	run_phase network_done network configure_network
+	run_phase dhcp_done dhcp configure_dhcp
+	run_phase system_done system configure_system
+	# Missing optional services are normal for different build variants.
+	if uci -q get firewall.@defaults[0] >/dev/null; then
+		run_phase firewall_done firewall configure_firewall
+	fi
+	if uci -q get nlbwmon.@nlbwmon[0] >/dev/null; then
+		run_phase nlbwmon_done nlbwmon configure_nlbwmon
+	fi
+fi
+
+if uci -q get nlbwmon.@nlbwmon[0] >/dev/null; then
+	migrate_nlbwmon || { uci -q revert nlbwmon; fail 'Cannot migrate nlbwmon'; }
+fi
+
+# governor was never consumed by this service (it uses governor0, etc.). Remove
+# that obsolete setting only; keep the upstream or user-selected active policy.
+if [ "$(uci -q get cpufreq.@settings[0].governor)" = 'performance' ]; then
+	checked_uci delete cpufreq.@settings[0].governor && checked_uci commit cpufreq || {
+		uci -q revert cpufreq
+		fail 'Cannot remove obsolete cpufreq option'
+	}
+fi
+
+checked_uci set r3s.state.defaults_version='1' && checked_uci commit r3s || {
+	uci -q revert r3s
+	fail 'Cannot finish initialization state'
+}
+log "Defaults complete (installation state: $mode)"
 exit 0

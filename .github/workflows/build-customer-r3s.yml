@@ -14,11 +14,17 @@ on:
         default: 'v25.12.5'
         type: string
 
+concurrency:
+  group: r3s-customer-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   REPO_URL: https://github.com/openwrt/openwrt.git
   REPO_BRANCH: ${{ github.event.inputs.branch || 'v25.12.5' }}
   TARGET: "rockchip"
   SUBTARGET: "armv8"
+  PROFILE: "friendlyarm_nanopi-r3s"
+  ROOTFS_PARTSIZE: "4096"
   TZ: Asia/Shanghai
 
 jobs:
@@ -49,23 +55,19 @@ jobs:
           sudo -E apt-get -qq clean
           sudo timedatectl set-timezone "$TZ"
 
-          # 开启 8GB 虚拟内存 Swap，杜绝 Go / sing-box / mihomo 多核并发编译 OOM 崩溃
-          sudo fallocate -l 8G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=8192
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          # 复用足够的 Swap，否则创建专用文件；保留 Runner 原有交换空间。
+          sudo bash "$GITHUB_WORKSPACE/scripts/build/prepare-swap.sh"
 
       # 3. 克隆 OpenWrt 官方原版源码 (upstream openwrt.git)
       - name: 克隆 OpenWrt 官方源码
         run: |
-          git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
+          git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" openwrt
 
       # 4. 执行 Step 1：配置扩展 Feeds 软件源 (01-diy-feeds.sh)
       - name: 注入扩展 Feeds 源 (01-diy-feeds.sh)
         run: |
           cd openwrt
-          chmod +x $GITHUB_WORKSPACE/scripts/customer/*.sh
-          $GITHUB_WORKSPACE/scripts/customer/01-diy-feeds.sh
+          bash "$GITHUB_WORKSPACE/scripts/customer/01-diy-feeds.sh"
 
       # 5. 更新所有 Feeds 仓库索引
       - name: 更新 Feeds 仓库 (feeds update)
@@ -77,7 +79,7 @@ jobs:
       - name: 工具链升级与软件包定制 (02-diy-packages.sh)
         run: |
           cd openwrt
-          $GITHUB_WORKSPACE/scripts/customer/02-diy-packages.sh
+          bash "$GITHUB_WORKSPACE/scripts/customer/02-diy-packages.sh"
 
       # 7. 安装所有 Feeds 组件索引
       - name: 安装 Feeds 索引 (feeds install)
@@ -93,7 +95,7 @@ jobs:
       - name: 生成目标配置与展开依赖 (03-generate-config.sh)
         run: |
           cd openwrt
-          $GITHUB_WORKSPACE/scripts/customer/03-generate-config.sh
+          bash "$GITHUB_WORKSPACE/scripts/customer/03-generate-config.sh"
 
       # 9. 预下载所有依赖源码包 (DL)
       - name: 预下载依赖包 (make download)
@@ -110,27 +112,14 @@ jobs:
           echo -e "$(nproc) thread compile"
           make -j$(nproc) || make -j1 || make -j1 V=s
 
-      # 11. 提取生成的最终固件、规范重命名与生成 SHA256 校验和文件
-      - name: 整理发布固件与生成日期标签
+      # 11. 保存来源提交、最终配置与软件包清单，生成唯一发布标签
+      - name: 整理发布固件与构建记录
+        env:
+          BUILD_DIR: openwrt
+          RELEASE_ROUTE: Customer
+          RELEASE_VERSION: ${{ env.REPO_BRANCH }}
         run: |
-          sudo timedatectl set-timezone "$TZ"
-          TAG_DATE=$(date +'%Y.%m.%d')
-          echo "RELEASE_TAG=OpenWrt-R3S-Customer-${TAG_DATE}" >> $GITHUB_ENV
-          echo "RELEASE_TITLE=OpenWrt (Customer) for NanoPi R3S (${TAG_DATE})" >> $GITHUB_ENV
-
-          mkdir -p release_files
-          cd openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}
-          for file in *friendlyarm_nanopi-r3s*.img.gz; do
-            if [ -f "$file" ]; then
-              fs_type="squashfs"
-              echo "$file" | grep -q "ext4" && fs_type="ext4"
-              new_name="OpenWrt-Customer-NanoPi-R3S-${fs_type}-sysupgrade-${TAG_DATE}.img.gz"
-              cp -f "$file" "$GITHUB_WORKSPACE/release_files/$new_name"
-            fi
-          done
-
-          cd "$GITHUB_WORKSPACE/release_files"
-          sha256sum *.img.gz > sha256sums.txt
+          bash scripts/build/collect-release.sh
 
       # 12. 上传固件至 Actions Artifacts
       - name: 上传构建固件到 Actions Artifacts
@@ -138,6 +127,7 @@ jobs:
         with:
           name: ${{ env.RELEASE_TAG }}
           path: release_files/*
+          if-no-files-found: error
 
       # 13. 自动发布到 GitHub Releases
       - name: 发布至 GitHub Releases

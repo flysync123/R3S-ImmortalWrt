@@ -1,0 +1,35 @@
+name: Validate scripts and isolated regression tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r3s-validate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check shell syntax without executing router scripts
+        run: |
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(find scripts -type f -name '*.sh' -print0)
+          for script in files/usr/bin/emmc-install \
+                        files/etc/uci-defaults/99-r3s-optimize \
+                        files/lib/preinit/81-r3s-upgrade-state \
+                        files/etc/rc.button/power; do
+            sh -n "$script"
+          done
+
+      - name: Run tests against temporary files and mocked commands
+        run: python3 -m unittest discover -s tests -v

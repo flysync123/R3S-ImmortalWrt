@@ -1,98 +1,302 @@
 #!/bin/sh
-# ==============================================================================
-# NanoPi R3S / R3S LTS 专属 eMMC 一键刷写迁移工具 (Inspired by sbwml/builder)
-# 用法：在 TF 卡系统中执行 `emmc-install /tmp/firmware.img.gz` 或直接 `emmc-install`
-# ==============================================================================
+# Install a repository/official NanoPi R3S sysupgrade.img.gz onto unused eMMC.
+# No image is unpacked into RAM. Every stream producer is checked explicitly.
 
-set -e
+set -u
+umask 077
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-PLAIN='\033[0m'
+fail() { printf '[错误] %s\n' "$*" >&2; return 1; }
 
-echo -e "${GREEN}======================================================${PLAIN}"
-echo -e "${GREEN}    NanoPi R3S LTS - eMMC 一键刷机迁移工具 (32GB)      ${PLAIN}"
-echo -e "${GREEN}======================================================${PLAIN}"
+usage() {
+    printf '%s\n' \
+        '用法: emmc-install [--yes] 固件.img.gz [SHA256]' \
+        '未指定 SHA256 时，从镜像同目录的 sha256sums.txt 读取。' \
+        '仅支持带 NanoPi R3S 设备元数据的 .img.gz；所有安全检查均不可跳过。'
+}
 
-# 1. 智能定位板载 eMMC 块设备 (通过 sysfs 读取底层硬件介质类型 MMC vs SD)
-EMMC_DEV=""
-for dev in /sys/block/mmcblk*; do
-    if [ -f "$dev/device/type" ]; then
-        TYPE=$(cat "$dev/device/type" 2>/dev/null || true)
-        if [ "$TYPE" = "MMC" ]; then
-            DEV_NAME=$(basename "$dev")
-            EMMC_DEV="/dev/$DEV_NAME"
-            break
+is_unsigned() {
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+}
+
+valid_digest() {
+    [ "${#1}" -eq 64 ] || return 1
+    case "$1" in *[!0-9a-fA-F]*) return 1 ;; esac
+}
+
+checksum_for() {
+    # Match the complete basename, never an unrelated entry or an ambiguous list.
+    awk -v name="$2" '
+        substr($0, 65, 2) == "  " || substr($0, 65, 2) == " *" {
+            if (substr($0, 67) == name) { value=substr($0, 1, 64); count++ }
+        }
+        END { if (count != 1) exit 1; print value }
+    ' "$1"
+}
+
+find_emmc() {
+    found=''
+    for node in /sys/class/block/mmcblk*; do
+        [ -f "$node/device/type" ] || continue
+        [ "$(cat "$node/device/type")" = MMC ] || continue
+        # boot0/boot1 and partitions are never whole-disk installation targets.
+        name=${node##*/}
+        case "$name" in mmcblk*[!0-9]*) continue ;; esac
+        [ -z "$found" ] || { fail '检测到多个 MMC 设备，无法唯一确定 eMMC。'; return 1; }
+        found=$name
+    done
+    [ -n "$found" ] || { fail '未明确识别到 eMMC，已停止；不会按设备编号猜测。'; return 1; }
+    printf '/dev/%s\n' "$found"
+}
+
+assert_unused() {
+    disk=${1##*/}
+    [ -r /proc/self/mountinfo ] && [ -r /proc/swaps ] || {
+        fail '无法读取挂载或交换空间状态。'; return 1;
+    }
+    [ -b "$1" ] || { fail '目标不是块设备。'; return 1; }
+    [ "$(cat "/sys/class/block/$disk/ro")" = 0 ] || {
+        fail '目标设备为只读或状态不明。'; return 1;
+    }
+    for node in "/sys/class/block/$disk" /sys/class/block/"$disk"p*; do
+        [ -r "$node/dev" ] || continue
+        devno=$(cat "$node/dev") || return 1
+        if awk -v dev="$devno" '$3 == dev { found=1 } END { exit !found }' /proc/self/mountinfo; then
+            fail "$1 或其分区已挂载（包括 /rom、/overlay 或 /dev/root），请从 TF 卡启动并卸载目标盘。"
+            return 1
         fi
+        for holder in "$node"/holders/*; do
+            [ ! -e "$holder" ] || {
+                fail "$1 存在正在使用的映射设备。"; return 1;
+            }
+        done
+        while read -r source rest; do
+            [ "$source" != Filename ] || continue
+            resolved=$(readlink -f "$source" 2>/dev/null) || continue
+            [ "$resolved" != "/dev/${node##*/}" ] || {
+                fail "$1 或其分区正在用作交换空间。"; return 1;
+            }
+        done < /proc/swaps
+    done
+    # A loop can refer directly to a block device without mounting that device
+    # itself. File-backed loops on this disk are covered by the parent mount.
+    for loop_file in /sys/class/block/loop*/loop/backing_file; do
+        [ -r "$loop_file" ] || continue
+        backing=$(cat "$loop_file") || return 1
+        case "$backing" in
+            /dev/*)
+                backing=$(readlink -f "$backing") || { fail '无法解析 loop 后端。'; return 1; }
+                case "${backing##*/}" in
+                    "$disk"|"$disk"p[0-9]*) fail "$1 正被 loop 设备使用。"; return 1 ;;
+                esac
+                [ -r "/sys/class/block/${backing##*/}/dev" ] || {
+                    fail '存在无法确认后端设备的 loop 映射，已停止。'; return 1;
+                }
+                ;;
+        esac
+    done
+}
+
+# Workers below are always launched asynchronously by their caller. Braces
+# keep $! as the process owning the cleanup trap, without an extra subshell.
+image_consumer() {
+    # fwtool metadata is appended AFTER gzip. Remove it in the stream, without
+    # truncating the input file; gzip must then exit 0, including its CRC check.
+    pipe_dir=$(mktemp -d /tmp/emmc-stream.XXXXXX) || exit 1
+    producer=''; decoder=''; consumer=''
+    trap 'for child in $consumer $decoder $producer; do kill "$child" 2>/dev/null || true; done; for child in $consumer $decoder $producer; do wait "$child" 2>/dev/null || true; done; rm -f "$pipe_dir/compressed" "$pipe_dir/raw"; rmdir "$pipe_dir"' 0
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    mkfifo "$pipe_dir/compressed" "$pipe_dir/raw" || exit 1
+    fwtool -q -T -i /dev/null "$IMAGE" > "$pipe_dir/compressed" &
+    producer=$!
+    gzip -dc < "$pipe_dir/compressed" > "$pipe_dir/raw" &
+    decoder=$!
+    "$@" < "$pipe_dir/raw" &
+    consumer=$!
+    wait "$consumer"; consumer_status=$?; consumer=''
+    wait "$decoder"; decoder_status=$?; decoder=''
+    wait "$producer"; producer_status=$?; producer=''
+    [ "$producer_status" -eq 0 ] && [ "$decoder_status" -eq 0 ] && [ "$consumer_status" -eq 0 ]
+}
+
+capture_layout() {
+    exec 3<&0
+    reader=''
+    trap '[ -z "$reader" ] || { kill "$reader" 2>/dev/null || true; wait "$reader" 2>/dev/null || true; }' 0
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    # Byte-sized reads prevent a short FIFO read from being treated as 512 bytes.
+    dd bs=1 count=512 of="$WORK/header" <&3 2>/dev/null &
+    reader=$!
+    wait "$reader"; result=$?; reader=''
+    [ "$result" -eq 0 ] && [ "$(wc -c < "$WORK/header")" -eq 512 ] || exit 1
+    wc -c <&3 > "$WORK/remainder-size" &
+    reader=$!
+    wait "$reader"; result=$?; reader=''
+    exit "$result"
+}
+
+inspect_stream() {
+    # Non-interactive shells replace async stdin with /dev/null. Keep a
+    # separate descriptor before starting children, including POSIX dash/ash.
+    exec 3<&0
+    hasher=''; inspector=''; splitter=''
+    trap 'for child in $splitter $inspector $hasher; do kill "$child" 2>/dev/null || true; done; for child in $splitter $inspector $hasher; do wait "$child" 2>/dev/null || true; done; rm -f "$WORK/hash.fifo" "$WORK/layout.fifo"' 0
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    mkfifo "$WORK/hash.fifo" "$WORK/layout.fifo" || exit 1
+    sha256sum < "$WORK/hash.fifo" > "$WORK/raw.sha256" &
+    hasher=$!
+    capture_layout < "$WORK/layout.fifo" &
+    inspector=$!
+    tee "$WORK/hash.fifo" <&3 > "$WORK/layout.fifo" &
+    splitter=$!
+    wait "$splitter"; tee_status=$?; splitter=''
+    wait "$inspector"; inspector_status=$?; inspector=''
+    wait "$hasher"; hash_status=$?; hasher=''
+    [ "$tee_status" -eq 0 ] && [ "$inspector_status" -eq 0 ] && [ "$hash_status" -eq 0 ]
+}
+
+validate_layout() {
+    # This tool supports the MBR, two-Linux-partition images emitted by this
+    # repository's rockchip profile. Unknown layouts fail closed.
+    od -An -v -tu1 "$WORK/header" > "$WORK/header.bytes" || return 1
+    awk -v size="$IMAGE_SIZE" '
+        { for (i=1; i<=NF; i++) b[++n]=$i }
+        function le32(p) { return b[p]+256*b[p+1]+65536*b[p+2]+16777216*b[p+3] }
+        END {
+            if (n != 512 || b[511] != 85 || b[512] != 170) exit 1
+            if (b[451] != 131 || b[467] != 131) exit 1
+            start1=le32(455); len1=le32(459); start2=le32(471); len2=le32(475)
+            if (start1 < 32768 || len1 < 1 || start2 < start1+len1 || len2 < 1) exit 1
+            if ((start2+len2)*512 > size || size % 512 != 0) exit 1
+            for (p=479; p<=510; p++) if (b[p] != 0) exit 1
+        }
+    ' "$WORK/header.bytes"
+}
+
+read_device_image() {
+    # Both dd processes share one input descriptor, so the second continues at
+    # the first one's offset. Large reads avoid millions of 512-byte syscalls.
+    exec 3<&0
+    reader=''
+    trap '[ -z "$reader" ] || { kill "$reader" 2>/dev/null || true; wait "$reader" 2>/dev/null || true; }' 0
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    dd bs=4M count="$((IMAGE_SIZE / 4194304))" <&3 &
+    reader=$!
+    wait "$reader"; result=$?; reader=''
+    [ "$result" -eq 0 ] || exit 1
+    dd bs=512 count="$((IMAGE_SIZE % 4194304 / 512))" <&3 &
+    reader=$!
+    wait "$reader"; result=$?; reader=''
+    exit "$result"
+}
+
+verify_device() {
+    reader=''; hasher=''
+    trap 'for child in $reader $hasher; do kill "$child" 2>/dev/null || true; done; for child in $reader $hasher; do wait "$child" 2>/dev/null || true; done; rm -f "$WORK/readback.fifo"' 0
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    mkfifo "$WORK/readback.fifo" || exit 1
+    read_device_image < "$EMMC_DEV" > "$WORK/readback.fifo" 2> "$WORK/readback.log" &
+    reader=$!
+    sha256sum < "$WORK/readback.fifo" > "$WORK/readback.sha256" &
+    hasher=$!
+    wait "$hasher"; hash_status=$?; hasher=''
+    wait "$reader"; read_status=$?; reader=''
+    [ "$read_status" -eq 0 ] && [ "$hash_status" -eq 0 ] || exit 1
+    [ "$(awk '{print $1}' "$WORK/raw.sha256")" = "$(awk '{print $1}' "$WORK/readback.sha256")" ]
+}
+
+cleanup() {
+    # Keep the lock until the active stream and all of its children have exited.
+    trap '' INT TERM HUP
+    if [ -n "${ACTIVE_PID:-}" ]; then
+        kill "$ACTIVE_PID" 2>/dev/null || true
+        wait "$ACTIVE_PID" 2>/dev/null || true
+        ACTIVE_PID=''
     fi
-done
-
-# 如果 sysfs 未识别到，则按常规优先级检索 /dev/mmcblk0 或 /dev/mmcblk1
-if [ -z "$EMMC_DEV" ]; then
-    if [ -b "/dev/mmcblk0" ]; then
-        EMMC_DEV="/dev/mmcblk0"
-    elif [ -b "/dev/mmcblk1" ]; then
-        EMMC_DEV="/dev/mmcblk1"
+    if [ -n "${WORK:-}" ]; then
+        rm -f "$WORK/metadata.json" "$WORK/header" "$WORK/header.bytes" \
+            "$WORK/remainder-size" "$WORK/raw.sha256" "$WORK/readback.sha256" "$WORK/readback.log"
+        rmdir "$WORK" 2>/dev/null || true
     fi
-fi
+    [ -z "${LOCK:-}" ] || rmdir "$LOCK" 2>/dev/null || true
+}
 
-if [ -z "$EMMC_DEV" ] || [ ! -b "$EMMC_DEV" ]; then
-    echo -e "${RED}[错误] 未检测到板载 eMMC 块设备！${PLAIN}"
-    exit 1
-fi
+run_job() {
+    "$@" &
+    ACTIVE_PID=$!
+    wait "$ACTIVE_PID"
+    job_status=$?
+    ACTIVE_PID=''
+    return "$job_status"
+}
 
-# 2. 检查当前根文件系统是否直接运行于 eMMC 上
-CURRENT_ROOT=$(mount | grep ' / ' | awk '{print $1}')
-if echo "$CURRENT_ROOT" | grep -q "$EMMC_DEV"; then
-    echo -e "${YELLOW}[提示] 当前系统已经在 eMMC ($EMMC_DEV) 上运行！无需二次刷入。${PLAIN}"
-    exit 0
-fi
-
-# 3. 获取待写入的固件镜像路径
-IMG_FILE="$1"
-if [ -z "$IMG_FILE" ]; then
-    # 自动在 /tmp 目录下寻找可用的固件
-    IMG_FILE=$(find /tmp -maxdepth 2 -type f \( -name "*sysupgrade*.img.gz" -o -name "*rockchip*.img.gz" -o -name "*.img" \) | head -n1)
-fi
-
-if [ -z "$IMG_FILE" ] || [ ! -f "$IMG_FILE" ]; then
-    echo -e "${RED}[错误] 未找到待写入的固件文件！${PLAIN}"
-    echo -e "${YELLOW}请先将固件上传至 /tmp 目录，例如：/tmp/firmware.img.gz${PLAIN}"
-    echo -e "用法：${GREEN}emmc-install /tmp/firmware.img.gz${PLAIN}"
-    exit 1
-fi
-
-echo -e "${GREEN}[1/4] 检测到待写入固件: ${PLAIN}${IMG_FILE}"
-echo -e "${GREEN}[2/4] 目标写入设备: ${PLAIN}${EMMC_DEV} (板载 32GB eMMC)"
-echo -e "${YELLOW}[警告] 写入将清除 eMMC 中的所有数据，请确保已备份重要数据！${PLAIN}"
-
-# 4. 执行写入
-echo -e "${GREEN}[3/4] 正在解压并写入 eMMC，请稍候...${PLAIN}"
-DD_STATUS=""
-if dd --help 2>&1 | grep -q 'progress'; then
-    DD_STATUS="status=progress"
-fi
-
-if echo "$IMG_FILE" | grep -q '\.gz$'; then
-    gzip -dc "$IMG_FILE" | dd of="$EMMC_DEV" bs=4M conv=fsync $DD_STATUS
-elif echo "$IMG_FILE" | grep -q '\.zst$'; then
-    if ! command -v zstd >/dev/null 2>&1; then
-        echo -e "${RED}[错误] 系统未安装 zstd 解压工具，请先运行: apk add zstd 或 opkg install zstd${PLAIN}"
-        exit 1
+main() {
+    YES=0; WORK=''; LOCK=''; ACTIVE_PID=''
+    if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then usage; return 0; fi
+    if [ "${1:-}" = --yes ]; then YES=1; shift; fi
+    [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; return 1; }
+    [ "$(id -u)" -eq 0 ] || { fail '需要 root 权限。'; return 1; }
+    for command in fwtool jsonfilter gzip sha256sum dd tee wc awk od mkfifo mktemp readlink; do
+        command -v "$command" >/dev/null 2>&1 || { fail "缺少工具: $command"; return 1; }
+    done
+    IMAGE=$(readlink -f "$1") || return 1
+    [ -f "$IMAGE" ] && [ -r "$IMAGE" ] || { fail '镜像不存在或不可读。'; return 1; }
+    case "$IMAGE" in *.img.gz) ;; *) fail '仅接受带设备元数据的 .img.gz 固件。'; return 1 ;; esac
+    EXPECTED=${2:-}
+    if [ -z "$EXPECTED" ]; then
+        sums="${IMAGE%/*}/sha256sums.txt"
+        [ -r "$sums" ] || { fail '缺少 sha256sums.txt，请一并上传或显式提供 SHA256。'; return 1; }
+        EXPECTED=$(checksum_for "$sums" "${IMAGE##*/}") || { fail '校验表中没有唯一匹配的固件条目。'; return 1; }
     fi
-    zstd -d -c "$IMG_FILE" | dd of="$EMMC_DEV" bs=4M conv=fsync $DD_STATUS
-else
-    dd if="$IMG_FILE" of="$EMMC_DEV" bs=4M conv=fsync $DD_STATUS
-fi
+    valid_digest "$EXPECTED" || { fail 'SHA256 格式错误。'; return 1; }
+    EXPECTED=$(printf '%s' "$EXPECTED" | tr 'A-F' 'a-f')
+    [ "$(sha256sum "$IMAGE" | awk '{print $1}')" = "$EXPECTED" ] || { fail '镜像 SHA256 不匹配。'; return 1; }
+    board=$(cat /tmp/sysinfo/board_name 2>/dev/null) || return 1
+    [ "$board" = 'friendlyarm,nanopi-r3s' ] || { fail "当前设备不是受支持的 NanoPi R3S: $board"; return 1; }
+    EMMC_DEV=$(find_emmc) || return 1
+    assert_unused "$EMMC_DEV" || return 1
+    [ -d /var/lock ] || mkdir -p /var/lock || return 1
+    # A failed lock acquisition must never remove another installer's lock.
+    mkdir /var/lock/emmc-install.lock 2>/dev/null || { fail '另一个刷机进程正在运行或锁未清理。'; return 1; }
+    LOCK=/var/lock/emmc-install.lock
+    trap cleanup 0
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    WORK=$(mktemp -d /tmp/emmc-install.XXXXXX) || return 1
+    fwtool -q -i "$WORK/metadata.json" "$IMAGE" || { fail '固件缺少有效设备元数据。'; return 1; }
+    supported=$(jsonfilter -i "$WORK/metadata.json" -e '@.supported_devices[*]') || return 1
+    printf '%s\n' "$supported" | grep -Fqx "$board" || { fail '固件元数据与当前设备不匹配。'; return 1; }
+    printf '%s\n' '[1/4] 验证解压完整性、镜像大小和分区布局……'
+    run_job image_consumer inspect_stream || { fail '镜像解压、读取或完整性检查失败，未写盘。'; return 1; }
+    remainder=$(awk '{print $1}' "$WORK/remainder-size") || return 1
+    is_unsigned "$remainder" || return 1
+    IMAGE_SIZE=$((remainder + 512))
+    validate_layout || { fail '镜像分区布局无效或不属于受支持的 Rockchip MBR 格式。'; return 1; }
+    sectors=$(cat "/sys/class/block/${EMMC_DEV##*/}/size") || return 1
+    is_unsigned "$sectors" || return 1
+    [ "$IMAGE_SIZE" -le "$((sectors * 512))" ] || { fail '镜像大于目标 eMMC 容量。'; return 1; }
+    printf '[2/4] 镜像: %s\n目标: %s\n写入字节: %s\n' "$IMAGE" "$EMMC_DEV" "$IMAGE_SIZE"
+    if [ "$YES" -eq 0 ]; then
+        printf '写入将覆盖目标盘数据。请输入目标设备名 %s 确认: ' "$EMMC_DEV"
+        IFS= read -r confirmation || { fail '未确认，已取消。'; return 1; }
+        [ "$confirmation" = "$EMMC_DEV" ] || { fail '确认不匹配，已取消。'; return 1; }
+    fi
+    # Recheck after the potentially long preflight and interactive confirmation.
+    assert_unused "$EMMC_DEV" || return 1
+    [ "$(sha256sum "$IMAGE" | awk '{print $1}')" = "$EXPECTED" ] || { fail '校验后镜像发生变化，已停止。'; return 1; }
+    printf '%s\n' '[3/4] 正在流式写入 eMMC……'
+    run_job image_consumer dd of="$EMMC_DEV" bs=4M conv=fsync || {
+        fail '写入或解压失败，目标盘内容可能不完整，请保持 TF 卡启动后重新处理。'; return 1;
+    }
+    sync || return 1
+    printf '%s\n' '[4/4] 正在回读并核对整个镜像的 SHA256……'
+    run_job verify_device || { fail '回读校验失败，请勿从目标 eMMC 启动。'; return 1; }
+    printf '%s\n' '写入及回读校验成功。请正常关机，断电后拔出 TF 卡，再重新上电。' \
+        '本工具不扩展分区；根分区大小由固件构建配置决定。'
+}
 
-sync
-
-# 5. 提示完成
-echo -e "${GREEN}[4/4] 写入成功！数据已强制同步刷盘 (Sync Complete)。${PLAIN}"
-echo -e "${GREEN}======================================================${PLAIN}"
-echo -e "${GREEN}  刷机已全部完成！请按以下步骤操作：                ${PLAIN}"
-echo -e "${GREEN}  1. 拔掉电源断电                                     ${PLAIN}"
-echo -e "${YELLOW}  2. 务必将 MicroSD (TF) 卡从卡槽拔出                  ${PLAIN}"
-echo -e "${GREEN}  3. 重新通电，设备将从 32GB eMMC 极速启动！         ${PLAIN}"
-echo -e "${GREEN}======================================================${PLAIN}"
+main "$@"
