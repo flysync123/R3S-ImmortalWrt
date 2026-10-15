@@ -7,12 +7,14 @@
 | 工作流 | 默认基准 | 软件组合 |
 |---|---|---|
 | Build ImmortalWrt 25.12.2 for NanoPi R3S | 官方 ImmortalWrt 25.12.2 ImageBuilder | HomeProxy / sing-box、Argon、流量统计、CPU 调频界面、zram 等 |
-| Build ImmortalWrt from Source (Full Build) | ImmortalWrt openwrt-25.12 分支，可输入 Tag | 从源码构建，主要软件组合接近 ImageBuilder |
+| Build ImmortalWrt from Source (Full Build) | ImmortalWrt v25.12.2 标签，可输入分支 | 从源码构建，主要软件组合接近 ImageBuilder |
 | Build Customer (Official OpenWrt Base) | 官方 OpenWrt v25.12.5，可输入 Tag | HomeProxy、Nikki / Mihomo、PassWall、MosDNS、NATMap、WireGuard 协议界面、网页终端等 |
 
 三条路线都使用 `rockchip/armv8`、`friendlyarm_nanopi-r3s`，默认根分区 **4096 MiB**，并合并 `files/`。构建耗时取决于上游下载、所选应用和 Runner 资源。
 
-Customer 的第三方依赖固定在 `scripts/customer/00-dependencies.sh` 中，更新前应核对提交和包兼容性。固定提交表示源码来源明确，不代表已经通过完整固件编译。Source 的默认分支会移动；需要重复构建同一源码时，请输入固定 Tag，并查阅实际提交清单。
+Customer 的第三方依赖固定在 `scripts/customer/00-dependencies.sh` 中，更新前应核对提交和包兼容性。固定提交表示源码来源明确，不代表已经通过完整固件编译。Source 默认使用固定版本标签；需要跟随开发时可输入 `openwrt-25.12`，实际提交记录在发布清单中。
+
+源码构建的版本输入会在准备环境前校验。`v25.12.2` 是版本标签，`openwrt-25.12` 是系列分支；输入 `25.12.2` 或 `openwrt-25.12.2` 时，如果原名不存在但 `v25.12.2` 存在，会规范为该标签。未知版本或网络错误会立即报错，不会改用其他版本。修改工作流后，请从 `main` 重新点 **Run workflow**；原失败记录的 **Re-run** 使用当时的工作流和输入。
 
 代理应用在当前锁定上游配置中默认未启用。先选择并配置一种代理，再按需启用 MosDNS；同时启用多个透明代理前，应处理 DNS、端口及防火墙规则冲突。
 

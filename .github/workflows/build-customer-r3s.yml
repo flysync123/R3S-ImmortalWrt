@@ -38,6 +38,12 @@ jobs:
       - name: Checkout 仓库文件
         uses: actions/checkout@v4
 
+      - name: 校验并规范化上游版本
+        run: |
+          resolved=$(bash scripts/build/resolve-ref.sh "$REPO_URL" "$REPO_BRANCH")
+          echo "REPO_BRANCH=$resolved" >> "$GITHUB_ENV"
+          echo "构建上游引用: $resolved"
+
       # 2. 清理磁盘空间并初始化编译工具链依赖
       - name: 清理磁盘空间与安装编译依赖
         run: |

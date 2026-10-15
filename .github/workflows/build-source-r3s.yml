@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'ImmortalWrt 源码分支或 Tag (如 openwrt-25.12 或 v25.12.2)'
+        description: 'ImmortalWrt 版本标签 v25.12.2（默认），或系列分支 openwrt-25.12'
         required: true
-        default: 'openwrt-25.12'
+        default: 'v25.12.2'
         type: string
 
 concurrency:
@@ -19,7 +19,7 @@ concurrency:
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
-  REPO_BRANCH: ${{ github.event.inputs.branch || 'openwrt-25.12' }}
+  REPO_BRANCH: ${{ github.event.inputs.branch || 'v25.12.2' }}
   TARGET: "rockchip"
   SUBTARGET: "armv8"
   PROFILE: "friendlyarm_nanopi-r3s"
@@ -36,6 +36,13 @@ jobs:
       # 1. 检出当前仓库中的代码与 files/ 优化配置文件
       - name: Checkout 仓库文件
         uses: actions/checkout@v4
+
+      # 在安装依赖之前检查引用；兼容 25.12.2 / openwrt-25.12.2 的版本输入。
+      - name: 校验并规范化上游版本
+        run: |
+          resolved=$(bash scripts/build/resolve-ref.sh "$REPO_URL" "$REPO_BRANCH")
+          echo "REPO_BRANCH=$resolved" >> "$GITHUB_ENV"
+          echo "构建上游引用: $resolved"
 
       # 2. 清理 GitHub Runner 虚拟机磁盘，释放 30GB+ 空间供源码全编译
       - name: 清理磁盘空间
