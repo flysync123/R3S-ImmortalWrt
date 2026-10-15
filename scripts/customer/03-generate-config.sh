@@ -104,7 +104,7 @@ CONFIG_PACKAGE_kmod-nft-socket=y
 CONFIG_PACKAGE_kmod-tun=y
 CONFIG_PACKAGE_kmod-dummy=y
 CONFIG_PACKAGE_kmod-inet-diag=y
-CONFIG_PACKAGE_kmod-bpf=y
+# OpenWrt 6.12 内核已内置 BPF；该版本没有独立的 kmod-bpf 软件包。
 CONFIG_PACKAGE_kmod-r8169=y
 CONFIG_PACKAGE_r8169-firmware=y
 
@@ -151,6 +151,6 @@ EOF
 
 # 自动补全所有依赖，并在未知包、依赖冲突或目标不支持时立即报错。
 cp .config .config.requested
-make defconfig
+make defconfig RECURSIVE_DEP_IS_ERROR=1
 bash "$SCRIPT_DIR/../build/check-config.sh" .config.requested .config
 echo "✔ [Customer] 全套 .config 配置生成并依赖展开完毕。"

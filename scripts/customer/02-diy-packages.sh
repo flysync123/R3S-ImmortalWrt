@@ -17,6 +17,12 @@ done < <(customer_dependencies)
 
 echo "=== [Customer Step 2] 正在进行工具链升级、依赖去重与系统级参数定制 ==="
 
+# Nikki 固定使用稳定版 Mihomo；缺少定义时停止，避免误删后继续构建。
+if [ ! -f "feeds/nikki/mihomo-meta/Makefile" ]; then
+    echo "ERROR: Missing feeds/nikki/mihomo-meta/Makefile. Re-run the locked feed update." >&2
+    exit 1
+fi
+
 # 1. 检查并适配 Golang 编译工具链
 # 关键原理：OpenWrt 25.12+ 官方源已内置现代化 Go 1.26+ 工具链 (golang1.26/golang-bootstrap/golang-version.mk)
 #           若强制使用旧结构仓库覆盖，会导致 feeds 索引损坏并缺失 golang-version.mk 从而造成编译失败。
@@ -36,7 +42,16 @@ rm -rf feeds/luci/applications/luci-app-mosdns 2>/dev/null || true
 rm -rf feeds/packages/net/sing-box 2>/dev/null || true
 rm -rf feeds/packages/net/mosdns 2>/dev/null || true
 rm -rf feeds/packages/net/v2ray-geodata 2>/dev/null || true
-./scripts/feeds update -i packages luci
+# 两个 Mihomo 定义的双向 CONFLICTS 会在 OpenWrt 25.12 生成循环 Kconfig 依赖。
+# 只保留 meta 的包定义，并清除重复执行时可能残留的 alpha 安装链接。
+if [ -L "package/feeds/nikki/mihomo-alpha" ]; then
+    rm -f package/feeds/nikki/mihomo-alpha
+elif [ -e "package/feeds/nikki/mihomo-alpha" ]; then
+    echo "ERROR: package/feeds/nikki/mihomo-alpha is not a feed symlink." >&2
+    exit 1
+fi
+rm -rf feeds/nikki/mihomo-alpha
+./scripts/feeds update -i packages luci nikki
 
 # 3. 克隆独立单包至 package/custom 目录
 echo "正在拉取独立社区插件至 package/custom 目录..."

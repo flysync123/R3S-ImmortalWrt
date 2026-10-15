@@ -63,7 +63,21 @@ class CustomerScriptsTest(unittest.TestCase):
             self.write("feeds/packages/lang/golang/golang-version.mk", "# upstream Go structure\n")
         else:
             self.write("feeds/packages/lang/golang/Makefile", "# legacy structure\n")
-        self.write("scripts/feeds", "#!/bin/bash\nexit ${TEST_FEEDS_STATUS:-0}\n")
+        self.write("feeds/nikki/mihomo-alpha/Makefile", "PROVIDES:=mihomo\nCONFLICTS:=mihomo-meta\n")
+        self.write("feeds/nikki/mihomo-meta/Makefile", "PROVIDES:=mihomo\nCONFLICTS:=mihomo-alpha\n")
+        self.write("scripts/feeds", r'''#!/bin/bash
+set -eu
+printf '%s\n' "$*" >> feeds-commands.log
+[ "${TEST_FEEDS_STATUS:-0}" -eq 0 ] || exit "$TEST_FEEDS_STATUS"
+if [ "$*" = 'update -i packages luci nikki' ]; then
+    : > feeds/nikki.index
+    for makefile in feeds/nikki/*/Makefile; do
+        [ -f "$makefile" ] || continue
+        package=${makefile%/Makefile}
+        printf '%s\n' "${package##*/}" >> feeds/nikki.index
+    done
+fi
+''')
         self.write("package/base-files/files/etc/shadow", "root:*:0:0:99999:7:::\n")
         self.write("package/base-files/files/bin/config_generate", "192.168.1.1 OpenWrt 'UTC'\n")
         self.write("feeds/luci/collections/luci/Makefile", "+luci-theme-bootstrap\n")
@@ -132,6 +146,53 @@ esac
         golang = next(row for row in self.dependencies if row[1] == "golang")
         self.assertIn("\t".join(golang[1:4]) + "\n", manifest)
 
+    def test_packages_keep_only_mihomo_meta_and_refresh_nikki_index(self):
+        self.prepare_packages()
+        meta = self.tree / "feeds/nikki/mihomo-meta/Makefile"
+        before = meta.read_bytes()
+        for _ in range(2):
+            self.assert_success(self.run_script("02-diy-packages.sh"))
+            self.assertFalse((self.tree / "feeds/nikki/mihomo-alpha").exists())
+            self.assertEqual(meta.read_bytes(), before)
+            self.assertEqual((self.tree / "feeds/nikki.index").read_text(), "mihomo-meta\n")
+        self.assertEqual(
+            (self.tree / "feeds-commands.log").read_text().splitlines(),
+            ["update -i packages luci nikki"] * 2,
+        )
+
+    def test_packages_remove_existing_mihomo_alpha_feed_symlink(self):
+        self.prepare_packages()
+        installed = self.tree / "package/feeds/nikki/mihomo-alpha"
+        installed.parent.mkdir(parents=True)
+        try:
+            installed.symlink_to("../../../feeds/nikki/mihomo-alpha", target_is_directory=True)
+        except OSError as error:
+            if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+                self.skipTest("Windows requires permission to create directory symlinks")
+            raise
+        self.assertTrue(installed.is_symlink())
+        self.assert_success(self.run_script("02-diy-packages.sh"))
+        self.assertFalse(os.path.lexists(installed))
+        self.assertTrue((self.tree / "feeds/nikki/mihomo-meta/Makefile").is_file())
+
+    def test_missing_mihomo_meta_fails_before_package_changes(self):
+        self.prepare_packages()
+        (self.tree / "feeds/nikki/mihomo-meta/Makefile").unlink()
+        result = self.run_script("02-diy-packages.sh")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("mihomo-meta/Makefile", result.stderr)
+        self.assertTrue((self.tree / "feeds/nikki/mihomo-alpha/Makefile").is_file())
+        self.assertFalse((self.tree / "feeds-commands.log").exists())
+        self.assertFalse((self.tree / "package/custom").exists())
+
+    def test_packages_reject_non_symlink_mihomo_alpha_install(self):
+        self.prepare_packages()
+        installed = self.write("package/feeds/nikki/mihomo-alpha/Makefile", "# preserve local package\n")
+        result = self.run_script("02-diy-packages.sh")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not a feed symlink", result.stderr)
+        self.assertEqual(installed.read_text(), "# preserve local package\n")
+
     def test_unexpected_feed_commit_fails_before_package_changes(self):
         self.prepare_packages()
         self.write("feeds/nikki/.test-revision", "0" * 40 + "\n")
@@ -147,12 +208,16 @@ esac
         self.assertFalse((self.tree / "package/custom").exists())
 
     def test_generated_config_uses_wireguard_protocol_and_requested_partition_size(self):
-        self.write("test-bin/make", "#!/bin/bash\nexit 0\n")
+        self.write("test-bin/make", "#!/bin/bash\nprintf '%s\\n' \"$@\" > make-args.log\n")
         self.assert_success(self.run_script("03-generate-config.sh", ROOTFS_PARTSIZE="2048"))
+        self.assertEqual((self.tree / "make-args.log").read_text().splitlines(),
+                         ["defconfig", "RECURSIVE_DEP_IS_ERROR=1"])
         config = (self.tree / ".config").read_text(encoding="utf-8")
         self.assertIn("CONFIG_PACKAGE_luci-proto-wireguard=y", config)
         self.assertIn("CONFIG_PACKAGE_fwtool=y", config)
         self.assertIn("CONFIG_PACKAGE_jsonfilter=y", config)
+        self.assertIn("CONFIG_PACKAGE_mihomo-meta=y", config)
+        self.assertNotIn("CONFIG_PACKAGE_kmod-bpf=", config)
         self.assertNotIn("luci-app-wireguard", config)
         self.assertNotIn("luci-i18n-wireguard", config)
         self.assertIn("CONFIG_TARGET_ROOTFS_PARTSIZE=2048", config)
