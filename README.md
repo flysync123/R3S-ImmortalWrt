@@ -1,59 +1,48 @@
-# NanoPi R3S / LTS · ImmortalWrt & OpenWrt 固件自动构建
+# NanoPi R3S / LTS 固件自动构建
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Device-NanoPi%20R3S%20%2F%20LTS-0366d6?style=flat-square&logo=linux" alt="Device">
-  <img src="https://img.shields.io/badge/SoC-Rockchip%20RK3566-ff6a00?style=flat-square&logo=arm" alt="SoC">
-  <img src="https://img.shields.io/badge/RAM-1GB%20LPDDR4X-orange?style=flat-square" alt="RAM">
-  <img src="https://img.shields.io/badge/eMMC-32GB-yellow?style=flat-square" alt="eMMC">
-  <img src="https://img.shields.io/badge/Build-GitHub%20Actions-2088FF?style=flat-square&logo=githubactions&logoColor=white" alt="Actions">
-  <img src="https://img.shields.io/badge/Linker-Mold-brightgreen?style=flat-square" alt="Mold">
-</p>
-
-基于 **GitHub Actions** 为 **FriendlyElec NanoPi R3S / R3S LTS** 打造的自动化固件编译系统。预置网络底层优化与代理生态，开箱即用。
+基于 GitHub Actions 的 FriendlyElec NanoPi R3S / R3S LTS 自动化固件构建系统，针对 1GB 内存与双千兆网口深度调优，开箱即用。
 
 ---
 
-## 🛠️ 三大构建工作流
+## 🛠️ 构建工作流
 
-在 [Actions 页面](../../actions) 点击相应工作流即可一键触发：
-
-| 工作流 | 源码基准 | 构建机制与特色 | 耗时 | 推荐场景 |
+| 工作流 | 源码基准 | 构建方式 | 耗时 | 输出固件命名规范 |
 | :--- | :--- | :--- | :---: | :--- |
-| **`Build ImmortalWrt 25.12.1 for NanoPi R3S`** | ImmortalWrt 25.12.1 | ⚡ **ImageBuilder 镜像组装**<br>· 官方预编译包快速组装 + files 优化注入 | **1~2 分钟** | ⭐ **日常推荐**<br>出包极快，日常使用首选 |
-| **`Build Customer (Official OpenWrt Base)`** | 官方 OpenWrt<br>*(v25.12.5)* | 🚀 **Customer 全源码编译**<br>· **官方原生架构优化** + **Mold 链接**<br>· **原生现代 Go** + Nikki + HomeProxy + MosDNS | **1.5~2.5 小时** | 🛠️ **极客首选**<br>纯净官方基线，追求极致性能 |
-| **`Build ImmortalWrt from Source (Full Build)`** | ImmortalWrt 官方源码<br>*(openwrt-25.12)* | 🧱 **ImmortalWrt 全源码编译**<br>· 原生 Feeds 全量交叉编译，支持自由切换分支 | **1.5~2.5 小时** | 📦 **二次开发**<br>定制 ImmortalWrt 源码 |
+| **`Build ImmortalWrt 25.12.2 for NanoPi R3S`** | ImmortalWrt 25.12.2 | ImageBuilder 极速组装 | 1~2 分钟 | `ImmortalWrt-25.12.2-NanoPi-R3S-[squashfs/ext4]-sysupgrade-YYYY.MM.DD.img.gz` |
+| **`Build Customer (Official OpenWrt Base)`** | 官方 OpenWrt *(v25.12.5)* | 全源码编译 + 现代生态 | 1.5~2.5 小时 | `OpenWrt-Customer-NanoPi-R3S-[squashfs/ext4]-sysupgrade-YYYY.MM.DD.img.gz` |
+| **`Build ImmortalWrt from Source (Full Build)`** | ImmortalWrt 官方源码 | 全源码标准交叉编译 | 1.5~2.5 小时 | `ImmortalWrt-Source-NanoPi-R3S-[squashfs/ext4]-sysupgrade-YYYY.MM.DD.img.gz` |
+
+> 构建完成后，固件及对应的 `sha256sums.txt` 校验文件会自动发布至 **Releases** 页面。
 
 ---
 
-## 🌟 核心特性
+## 🌟 默认系统信息
 
-* **代理分流**：集成 `HomeProxy` (sing-box 内核)、`Nikki` (Mihomo 内核)、`PassWall`、`MosDNS` (内置分流规则)、`NATMap`、`WireGuard`。
-* **现代 UI**：预置 `luci-theme-argon` 毛玻璃主题与 `luci-app-argon-config`。
-* **1GB 内存防护**：`zram-swap` 内存压缩（`swappiness=5`），杜绝大并发与大规则集导致的 OOM 崩溃。
-* **网络加速**：强制启用 **TCP BBR**、**7.5MB UDP 缓冲区** (满足 QUIC / Hysteria2 满速)、**Flow Offloading** 与 **RPS 软中断四核均衡**。
-* **开箱即用**：
-  * 后台地址：**`http://10.0.0.1`**（防光猫 192.168.1.1 冲突）
-  * 默认凭据：`root` / **`password`**
-  * 根分区预分配 **4GB**（满足海量插件扩展）
-  * LTS 机身物理 Power 键安全关机
-  * 内置 **`emmc-install`** 终端一键刷机工具
+- **后台地址**：`http://10.0.0.1`（防光猫 192.168.1.1 冲突）
+- **默认凭据**：用户名 `root` / 密码 `password`
+- **根分区大小**：预分配 4GB（初次启动自动扩容全盘）
+- **系统核心调优**：
+  - **网络加速**：强制启用 TCP BBR、7.5MB UDP 缓冲区、Flow Offloading（软件流量分载）、RPS 软中断四核均衡
+  - **1GB 内存防护**：启用 `zram-swap` 内存压缩（`swappiness=5`），杜绝 OOM 崩溃
+  - **预置代理生态**：HomeProxy (sing-box)、Nikki (Mihomo)、PassWall、MosDNS、Argon 现代主题
+  - **硬件适配**：LTS 物理 Power 键安全刷盘关机、终端内置 `emmc-install` 一键刷机工具
 
 ---
 
-## 🚀 使用指南
+## 🚀 快速使用
 
 ### 1. 云端构建
-1. **Fork 本仓库** ➔ 在仓库 **Settings ➔ Actions ➔ General** 勾选 **`Read and write permissions`**。
-2. 在 **Actions** 页面选择工作流，点击 **`Run workflow`**。
-3. 构建完成后在 **[Releases](../../releases)** 页面下载 `.img.gz` 固件。
+1. Fork 本仓库，进入 **Settings ➔ Actions ➔ General**，将 **Workflow permissions** 设置为 **Read and write permissions**。
+2. 在 **Actions** 页面选择对应的工作流，点击 **Run workflow**。
+3. 构建完成后在 **Releases** 页面下载固件。
 
 ### 2. 刷入 eMMC
-* **网页刷机**：烧录官方 [eFlasher 固件](https://wiki.friendlyelec.com/wiki/index.php/NanoPi_R3S/zh) 至 TF 卡启动，浏览器访问 `http://<设备IP>:8080` 上传固件烧入 eMMC，拔卡重启。
-* **命令行刷机**：TF 卡启动后将固件上传至 `/tmp/firmware.img.gz`，执行：
+- **方式 A（网页刷机）**：使用官方 [eFlasher 固件](https://wiki.friendlyelec.com/wiki/index.php/NanoPi_R3S/zh) 写入 TF 卡启动，浏览器访问 `http://<设备IP>:8080` 上传固件写入 eMMC，拔卡重启。
+- **方式 B（命令行刷机）**：TF 卡启动后将固件上传至 `/tmp/` 目录，在终端执行：
   ```sh
-  emmc-install /tmp/firmware.img.gz
+  emmc-install /tmp/固件名称.img.gz
   ```
-  完成后断电**拔出 TF 卡**，重新通电即可。
+  完成后断电，**拔出 TF 卡**，重新上电即可从 32GB eMMC 启动。
 
 ---
 
@@ -62,19 +51,17 @@
 ```text
 .
 ├── .github/workflows/
-│   ├── build-r3s.yml             # ImageBuilder 极速打包 (1~2分钟)
-│   ├── build-customer-r3s.yml    # Customer 全源码编译 (官方 OpenWrt + 现代生态)
-│   └── build-source-r3s.yml      # ImmortalWrt 官方源码全编译
-├── scripts/customer/             # Customer DIY 编译流水线脚本
-│   ├── 01-diy-feeds.sh           # 扩展 Feeds 注入
-│   ├── 02-diy-packages.sh        # 工具链检查、依赖去重、插件拉取、IP/时区定制
-│   └── 03-generate-config.sh     # 目标架构配置、Mold 优化与依赖展开
-├── files/                        # 固化底层优化层 (BBR / 网络参数 / 按键 / 刷机工具)
+│   ├── build-imagebuilder-r3s.yml    # ImageBuilder 极速打包 (1~2 分钟)
+│   ├── build-customer-r3s.yml        # Customer 全源码编译 (官方 OpenWrt 基准)
+│   └── build-source-r3s.yml          # ImmortalWrt 官方源码全编译
+├── scripts/customer/                 # Customer DIY 编译流水线脚本
+│   ├── 01-diy-feeds.sh               # 扩展 Feeds 注入
+│   ├── 02-diy-packages.sh            # 工具链检查、软件包定制与 files 注入
+│   └── 03-generate-config.sh         # 架构配置与依赖展开
+├── files/                            # 编译期直接固化打入固件的优化层
+│   ├── etc/rc.button/power           # LTS 物理电源键关机监听
+│   ├── etc/sysctl.d/99-custom.conf   # BBR、UDP 缓冲与内核调优
+│   ├── etc/uci-defaults/99-r3s-optimize # 开机自销毁初始化配置 (10.0.0.1 等)
+│   └── usr/bin/emmc-install          # 终端 eMMC 一键刷机工具
 └── README.md
 ```
-
----
-
-## 🤝 致谢
-
-[ImmortalWrt](https://github.com/immortalwrt/immortalwrt) · [OpenWrt](https://openwrt.org/) · [FriendlyElec](https://wiki.friendlyelec.com/wiki/index.php/NanoPi_R3S/zh) · [sbwml/builder](https://github.com/sbwml/builder) · [P3TERX](https://github.com/P3TERX/Actions-OpenWrt) · [jerrykuku](https://github.com/jerrykuku/luci-theme-argon)

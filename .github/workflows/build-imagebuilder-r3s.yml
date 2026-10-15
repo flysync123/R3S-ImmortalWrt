@@ -1,4 +1,4 @@
-name: Build ImmortalWrt 25.12.1 for NanoPi R3S
+name: Build ImmortalWrt 25.12.2 for NanoPi R3S
 
 # ==============================================================================
 # 触发机制：支持在 GitHub 仓库 Actions 页面手动一键点击构建 (workflow_dispatch)
@@ -10,7 +10,7 @@ on:
 # 全局环境变量配置
 # ==============================================================================
 env:
-  VERSION: "25.12.1"                      # ImmortalWrt 固件版本（采用 apk 包管理器，Linux 6.12 内核）
+  VERSION: "25.12.2"                      # ImmortalWrt 固件版本（采用 apk 包管理器，Linux 6.12 内核）
   TARGET: "rockchip"                      # 目标 SoC 架构大类（Rockchip 瑞芯微系列）
   SUBTARGET: "armv8"                      # 目标子架构（64 位 ARMv8）
   PROFILE: "friendlyarm_nanopi-r3s"       # 官方设备唯一标识符（NanoPi R3S / R3S LTS 专属 Profile）
@@ -65,19 +65,27 @@ jobs:
                      ROOTFS_PARTSIZE="${{ env.ROOTFS_PARTSIZE }}" \
                      FILES="$GITHUB_WORKSPACE/files"
 
-      # 4. 提取生成的最终固件、sysupgrade 升级包与 SHA256 校验和文件
+      # 4. 提取生成的最终固件、规范重命名与生成 SHA256 校验和文件
       - name: 整理发布固件与生成日期标签
         run: |
-          mkdir -p release_files
-          cp ib/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*-sysupgrade.img.gz release_files/ || true
-          cp ib/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*-squashfs-*.img.gz release_files/ || true
-          cp ib/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/sha256sums release_files/ || true
-
-          # 设置东八区时区并生成以日期格式命名的 Release Tag (例如 ImmortalWrt-R3S-25.12.1-2026.08.31)
           sudo timedatectl set-timezone "Asia/Shanghai"
           TAG_DATE=$(date +'%Y.%m.%d')
           echo "RELEASE_TAG=ImmortalWrt-R3S-${{ env.VERSION }}-${TAG_DATE}" >> $GITHUB_ENV
           echo "RELEASE_TITLE=ImmortalWrt ${{ env.VERSION }} for NanoPi R3S (${TAG_DATE})" >> $GITHUB_ENV
+
+          mkdir -p release_files
+          cd ib/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}
+          for file in *friendlyarm_nanopi-r3s*.img.gz; do
+            if [ -f "$file" ]; then
+              fs_type="squashfs"
+              echo "$file" | grep -q "ext4" && fs_type="ext4"
+              new_name="ImmortalWrt-${{ env.VERSION }}-NanoPi-R3S-${fs_type}-sysupgrade-${TAG_DATE}.img.gz"
+              cp -f "$file" "$GITHUB_WORKSPACE/release_files/$new_name"
+            fi
+          done
+
+          cd "$GITHUB_WORKSPACE/release_files"
+          sha256sum *.img.gz > sha256sums.txt
 
       # 5. 上传固件至 GitHub Actions Artifacts（构建产物备份）
       - name: 上传构建固件到 Actions Artifacts

@@ -12,12 +12,12 @@ echo "=== [Customer Step 2] 正在进行工具链升级、依赖去重与系统�
 # 关键原理：OpenWrt 25.12+ 官方源已内置现代化 Go 1.26+ 工具链 (golang1.26/golang-bootstrap/golang-version.mk)
 #           若强制使用旧结构仓库覆盖，会导致 feeds 索引损坏并缺失 golang-version.mk 从而造成编译失败。
 #           因此：当检测到官方 25.12+ 现代 Go 工具链时保持原生；仅当为旧版 OpenWrt (24.10及以前) 时才升级。
-if [ -d "feeds/packages/lang/golang/golang1.26" ] || [ -d "feeds/packages/lang/golang/golang1.25" ] || [ -f "feeds/packages/lang/golang/golang-version.mk" ]; then
+if [ -d "feeds/packages/lang/golang/golang1.27" ] || [ -d "feeds/packages/lang/golang/golang1.26" ] || [ -d "feeds/packages/lang/golang/golang1.25" ] || [ -f "feeds/packages/lang/golang/golang-version.mk" ]; then
     echo "✔ 检测到当前 OpenWrt 已内置现代 Golang 工具链，保持原生结构以确保编译通过。"
 elif [ -d "feeds/packages/lang/golang" ]; then
-    echo "正在为旧版环境升级 Golang 编译环境至 25.x..."
+    echo "正在为旧版环境升级 Golang 编译环境至 26.x..."
     rm -rf feeds/packages/lang/golang
-    git clone --depth 1 https://github.com/sbwml/packages_lang_golang -b 25.x feeds/packages/lang/golang
+    git clone --depth 1 https://github.com/sbwml/packages_lang_golang -b 26.x feeds/packages/lang/golang
 fi
 
 # 2. 清除官方基础源中的旧版/冲突包定义（避免与 passwall_packages / mosdns 源产生重复声明冲突）
