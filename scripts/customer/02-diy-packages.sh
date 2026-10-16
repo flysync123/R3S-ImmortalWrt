@@ -23,7 +23,7 @@ if [ ! -f "feeds/nikki/mihomo-meta/Makefile" ]; then
     exit 1
 fi
 
-# 1. Xray 26.10.10 需要 Go 1.27；固定官方现代布局，保持版本选择、bootstrap 与 helper 一致。
+# 1. 保留已验证的官方 Go 1.27.2，供 sing-box、Mihomo、MosDNS 等使用。
 # 源码克隆在 package/ 与 feeds/ 扫描范围之外，只复制 lang/golang 子树。
 build_root=$(pwd -P)
 for owned_path in customer-sources/golang feeds/packages/lang/golang package/feeds/packages; do

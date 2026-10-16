@@ -29,6 +29,6 @@ done < <(customer_dependencies)
 cat "$FEEDS_CONFIG" >> "$FEEDS_TEMP"
 mv "$FEEDS_TEMP" "$FEEDS_CONFIG"
 
-echo "✔ 已注入固定提交的 passwall_packages, passwall, nikki, mosdns 扩展源"
+echo "✔ 已注入固定提交的 passwall_packages（共享核心）, nikki, mosdns 扩展源"
 
 echo "=== [Customer Step 1] Feeds 配置完成 ==="

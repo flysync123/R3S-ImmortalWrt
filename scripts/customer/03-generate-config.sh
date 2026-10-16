@@ -11,10 +11,10 @@ TARGET=${TARGET:-rockchip}
 SUBTARGET=${SUBTARGET:-armv8}
 PROFILE=${PROFILE:-friendlyarm_nanopi-r3s}
 ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE:-4096}
-BUILD_MODE=${BUILD_MODE:-full}
+BUILD_MODE=${BUILD_MODE:-no-passwall}
 case "$BUILD_MODE" in
-    full|lite) ;;
-    *) echo "ERROR: BUILD_MODE 必须为 full 或 lite。" >&2; exit 1 ;;
+    no-passwall) ;;
+    *) echo "ERROR: BUILD_MODE 必须为 no-passwall。" >&2; exit 1 ;;
 esac
 for value in "$TARGET" "$SUBTARGET" "$PROFILE"; do
     [[ "$value" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "ERROR: 非法目标配置: $value" >&2; exit 1; }
@@ -58,7 +58,7 @@ CONFIG_PACKAGE_autocore-arm=y
 # ------------------------------------------------------------------------------
 # 4. 现代代理分流、DNS 加速与打洞组件生态
 # ------------------------------------------------------------------------------
-# 解决 PassWall 依赖与基础 dnsmasq 冲突
+# 使用完整 DNS/DHCP 功能，供现有分流与防火墙配置使用
 CONFIG_PACKAGE_dnsmasq=n
 CONFIG_PACKAGE_dnsmasq-full=y
 
@@ -72,10 +72,6 @@ CONFIG_PACKAGE_luci-app-nikki=y
 CONFIG_PACKAGE_luci-i18n-nikki-zh-cn=y
 CONFIG_PACKAGE_nikki=y
 CONFIG_PACKAGE_mihomo-meta=y
-
-# PassWall 套件
-CONFIG_PACKAGE_luci-app-passwall=y
-CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y
 
 # MosDNS 分流解析加速与地理规则库
 CONFIG_PACKAGE_luci-app-mosdns=y
@@ -155,25 +151,27 @@ CONFIG_PACKAGE_docker=n
 CONFIG_PACKAGE_dockerd=n
 EOF
 
-if [[ "$BUILD_MODE" == lite ]]; then
-    # PassWall defaults select sslocal; disable both the selectors and all variants.
-    cat >> .config <<'EOF'
-CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client=n
-CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Server=n
-CONFIG_PACKAGE_shadowsocks-rust-sslocal=n
-CONFIG_PACKAGE_shadowsocks-rust-ssserver=n
-CONFIG_PACKAGE_shadowsocks-rust-ssmanager=n
-CONFIG_PACKAGE_shadowsocks-rust-ssservice=n
-CONFIG_PACKAGE_shadowsocks-rust-ssurl=n
-EOF
-fi
+# 取消 PassWall 及其独占代理组件；共享依赖交给 Kconfig 重新计算。
+excluded_packages=(
+    luci-app-passwall luci-i18n-passwall-zh-cn xray-core
+    shadowsocks-rust-sslocal shadowsocks-rust-ssserver shadowsocks-rust-ssmanager
+    shadowsocks-rust-ssservice shadowsocks-rust-ssurl
+    shadowsocksr-libev-ssr-local shadowsocksr-libev-ssr-redir shadowsocksr-libev-ssr-server
+    simple-obfs-client v2ray-plugin haproxy geoview
+    chinadns-ng dns2socks microsocks ipt2socks tcping
+)
+for package in "${excluded_packages[@]}"; do
+    printf 'CONFIG_PACKAGE_%s=n\n' "$package" >> .config
+done
 
 # 自动补全所有依赖，并在未知包、依赖冲突或目标不支持时立即报错。
 cp .config .config.requested
 make defconfig RECURSIVE_DEP_IS_ERROR=1
 bash "$SCRIPT_DIR/../build/check-config.sh" .config.requested .config
-if [[ "$BUILD_MODE" == lite ]] && grep -Eq '^CONFIG_PACKAGE_(shadowsocks-rust-[^=]+|luci-app-passwall_INCLUDE_Shadowsocks_Rust_(Client|Server))=[ym]$' .config; then
-    echo "ERROR: 精简模式仍选中了 Rust Shadowsocks，请检查上游依赖。" >&2
-    exit 1
-fi
+for package in "${excluded_packages[@]}"; do
+    if grep -Fqx "CONFIG_PACKAGE_$package=y" .config || grep -Fqx "CONFIG_PACKAGE_$package=m" .config; then
+        echo "ERROR: 已取消的 PassWall 组件仍被依赖选中: $package" >&2
+        exit 1
+    fi
+done
 echo "✔ [Customer] $BUILD_MODE 模式 .config 配置生成并依赖展开完毕。"

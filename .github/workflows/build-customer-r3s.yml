@@ -3,7 +3,7 @@ name: Build Customer (Official OpenWrt Base)
 # ==============================================================================
 # 触发机制：基于官方原版 OpenWrt 源码 + Customer 模块化现代构建流 (workflow_dispatch)
 # 核心优势：基于官方 OpenWrt 稳定基准，集成 Mold 极速链接、
-#           现代 Go 工具链与 HomeProxy/Nikki/MosDNS/PassWall 全套生态
+#           现代 Go 工具链与 HomeProxy/Nikki/MosDNS 生态，移除 PassWall 独占组件
 # ==============================================================================
 on:
   workflow_dispatch:
@@ -13,14 +13,6 @@ on:
         required: true
         default: 'v25.12.5'
         type: string
-      build_mode:
-        description: 'full 完整模式；lite 精简模式，跳过 Rust 版 Shadowsocks'
-        required: true
-        default: full
-        type: choice
-        options:
-          - full
-          - lite
 
 concurrency:
   group: r3s-customer-${{ github.ref }}
@@ -29,7 +21,7 @@ concurrency:
 env:
   REPO_URL: https://github.com/openwrt/openwrt.git
   REPO_BRANCH: ${{ github.event.inputs.branch || 'v25.12.5' }}
-  BUILD_MODE: ${{ github.event.inputs.build_mode || 'full' }}
+  BUILD_MODE: no-passwall
   TARGET: "rockchip"
   SUBTARGET: "armv8"
   PROFILE: "friendlyarm_nanopi-r3s"
@@ -106,7 +98,6 @@ jobs:
           ./scripts/feeds install -f -p passwall_packages sing-box v2ray-geodata
           ./scripts/feeds install -f -p mosdns mosdns luci-app-mosdns geo2txt
           ./scripts/feeds install -f -p nikki nikki luci-app-nikki mihomo-meta
-          ./scripts/feeds install -f -p passwall luci-app-passwall
 
       # 8. 执行 Step 3：生成目标架构配置与依赖解析 (03-generate-config.sh)
       - name: 生成目标配置与展开依赖 (03-generate-config.sh)

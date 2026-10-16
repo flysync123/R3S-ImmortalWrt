@@ -146,11 +146,12 @@ esac
         self.assertIn("official ImageBuilder baseline", info)
         self.assertIn("packages=luci sing-box", info)
 
-    def test_customer_lite_is_identified_in_release_name_and_metadata(self):
-        self.env.update(RELEASE_ROUTE="Customer", RELEASE_VERSION="v25.12.5", BUILD_MODE="lite")
+    def test_customer_no_passwall_records_metadata_and_preserves_release_naming(self):
+        self.env.update(RELEASE_ROUTE="Customer", RELEASE_VERSION="v25.12.5", BUILD_MODE="no-passwall")
         self.assert_success(self.run_helper("collect-release.sh"))
-        self.assertIn("build_mode=lite\n", (self.release / "build-info.txt").read_text())
-        self.assertIn(f"{REVISION[:12]}-lite-123456789.1", (self.tree / "github.env").read_text())
+        self.assertIn("build_mode=no-passwall\n", (self.release / "build-info.txt").read_text())
+        self.assertIn(f"Customer-v25.12.5-{REVISION[:12]}-123456789.1", (self.tree / "github.env").read_text())
+        self.assertNotIn("no-passwall", (self.tree / "github.env").read_text())
 
     def prepare_compile(self):
         self.write(".config", "CONFIG_TARGET_rockchip=y\n")

@@ -6,7 +6,6 @@
 customer_dependencies() {
     cat <<'EOF'
 feed|passwall_packages|https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git|1af0a5c4fb3a227201683b64d32f61c65db9be72|feeds/passwall_packages
-feed|passwall|https://github.com/Openwrt-Passwall/openwrt-passwall.git|356dc9c4111daf602cc3ec852f6fbaabd194a16b|feeds/passwall
 feed|nikki|https://github.com/nikkinikki-org/OpenWrt-nikki.git|78e1a751d55ed0762811f054ee699049473da7b8|feeds/nikki
 feed|mosdns|https://github.com/sbwml/luci-app-mosdns.git|bd40245303cd0ba56804d49eed5dbc4be2a082ca|feeds/mosdns
 package|luci-theme-argon|https://github.com/jerrykuku/luci-theme-argon.git|c4a8b4eadcd17cad348a1312954a4852c21395f6|package/custom/luci-theme-argon

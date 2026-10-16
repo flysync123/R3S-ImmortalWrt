@@ -139,6 +139,8 @@ esac
         for kind, name, url, revision, path in self.dependencies:
             if kind == "feed":
                 self.assertEqual(once.count(f"src-git {name} {url}^{revision}\n"), 1)
+        self.assertNotIn("src-git passwall ", once)
+        self.assertIn("src-git passwall_packages ", once)
 
     def test_active_feeds_conf_takes_precedence(self):
         self.write("feeds.conf", "src-git packages https://example.test/active\n")
@@ -171,7 +173,7 @@ esac
             self.assertEqual((self.tree / relative).read_bytes(), content)
         self.assert_pinned_official_go()
         manifest = (self.tree / "customer-dependencies.tsv").read_text()
-        self.assertEqual(len(manifest.splitlines()), 10)
+        self.assertEqual(len(manifest.splitlines()), len(self.dependencies) + 1)
         self.assertIn("luci-theme-argon", (self.tree / "feeds/luci/collections/luci/Makefile").read_text())
         for kind, name, url, revision, path in self.dependencies:
             self.assertIn(f"{name}\t{url}\t{revision}\n", manifest)
@@ -190,7 +192,7 @@ esac
         self.assert_success(self.run_script("02-diy-packages.sh"))
         self.assert_pinned_official_go()
         manifest = (self.tree / "customer-dependencies.tsv").read_text()
-        self.assertEqual(len(manifest.splitlines()), 10)
+        self.assertEqual(len(manifest.splitlines()), len(self.dependencies) + 1)
         golang = next(row for row in self.dependencies if row[1] == "golang")
         self.assertIn("\t".join(golang[1:4]) + "\n", manifest)
 
@@ -200,7 +202,7 @@ esac
             self.assert_success(self.run_script("02-diy-packages.sh"))
             self.assert_pinned_official_go()
             manifest = (self.tree / "customer-dependencies.tsv").read_text().splitlines()
-            self.assertEqual(len(manifest), 10)
+            self.assertEqual(len(manifest), len(self.dependencies) + 1)
             self.assertEqual(sum(line.startswith("golang\t") for line in manifest), 1)
 
     def test_missing_or_incompatible_official_go_preserves_installed_compiler(self):
@@ -338,7 +340,7 @@ esac
         self.assertIn("CONFIG_PACKAGE_jsonfilter=y", config)
         self.assertIn("CONFIG_PACKAGE_mihomo-meta=y", config)
         self.assertIn("CONFIG_CCACHE=y", config)
-        self.assertNotIn("CONFIG_PACKAGE_shadowsocks-rust-sslocal=n", config)
+        self.assertIn("CONFIG_PACKAGE_shadowsocks-rust-sslocal=n", config)
         self.assertNotIn("CONFIG_PACKAGE_kmod-bpf=", config)
         self.assertNotIn("luci-app-wireguard", config)
         self.assertNotIn("luci-i18n-wireguard", config)
@@ -351,26 +353,29 @@ esac
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("luci-proto-wireguard", result.stdout + result.stderr)
 
-    def test_lite_disables_rust_shadowsocks_and_retains_proxy_apps(self):
+    def test_no_passwall_retains_shared_proxy_and_dns_apps(self):
         self.write("test-bin/make", "#!/bin/bash\nexit 0\n")
-        self.assert_success(self.run_script("03-generate-config.sh", BUILD_MODE="lite"))
+        self.assert_success(self.run_script("03-generate-config.sh"))
         config = (self.tree / ".config").read_text(encoding="utf-8")
-        for suffix in ("Client", "Server"):
-            self.assertIn(f"CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_{suffix}=n\n", config)
-        for variant in ("sslocal", "ssserver", "ssmanager", "ssservice", "ssurl"):
-            self.assertIn(f"CONFIG_PACKAGE_shadowsocks-rust-{variant}=n\n", config)
-        for package in ("luci-app-homeproxy", "luci-app-nikki", "luci-app-passwall", "luci-app-mosdns", "mihomo-meta", "sing-box"):
+        for package in ("luci-app-passwall", "luci-i18n-passwall-zh-cn", "xray-core",
+                        "shadowsocks-rust-sslocal", "shadowsocksr-libev-ssr-local",
+                        "shadowsocksr-libev-ssr-redir", "v2ray-plugin", "simple-obfs-client",
+                        "geoview", "haproxy", "chinadns-ng", "dns2socks", "microsocks", "ipt2socks", "tcping"):
+            self.assertIn(f"CONFIG_PACKAGE_{package}=n\n", config)
+            self.assertNotIn(f"CONFIG_PACKAGE_{package}=y\n", config)
+        for package in ("luci-app-homeproxy", "luci-app-nikki", "luci-app-mosdns", "mihomo-meta", "sing-box",
+                        "v2ray-geoip", "v2ray-geosite", "geo2txt", "yq", "dnsmasq-full"):
             self.assertIn(f"CONFIG_PACKAGE_{package}=y\n", config)
         self.assertEqual(config, (self.tree / ".config.requested").read_text(encoding="utf-8"))
 
-    def test_lite_rejects_rust_shadowsocks_reselected_by_dependencies(self):
+    def test_excluded_passwall_components_reselected_by_dependencies_fail(self):
         for selected in ("shadowsocks-rust-sslocal=y", "shadowsocks-rust-ssserver=m",
-                         "luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client=y"):
+                         "luci-app-passwall=y", "xray-core=y", "haproxy=m"):
             with self.subTest(selected=selected):
                 self.write("test-bin/make", f"#!/bin/bash\nprintf '%s\\n' 'CONFIG_PACKAGE_{selected}' >> .config\n")
-                result = self.run_script("03-generate-config.sh", BUILD_MODE="lite")
+                result = self.run_script("03-generate-config.sh")
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("Rust Shadowsocks", result.stderr)
+                self.assertIn("PassWall", result.stderr)
 
     def test_unknown_build_mode_is_rejected_before_writing_config(self):
         self.assertNotEqual(self.run_script("03-generate-config.sh", BUILD_MODE="typo").returncode, 0)

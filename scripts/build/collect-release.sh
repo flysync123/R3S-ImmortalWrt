@@ -20,8 +20,8 @@ case "$RELEASE_ROUTE" in
     *) echo "Unknown release route: $RELEASE_ROUTE" >&2; exit 1 ;;
 esac
 if [[ "$RELEASE_ROUTE" == Customer ]]; then
-    BUILD_MODE=${BUILD_MODE:-full}
-    case "$BUILD_MODE" in full|lite) ;; *) echo "Unknown build mode: $BUILD_MODE" >&2; exit 1 ;; esac
+    BUILD_MODE=${BUILD_MODE:-no-passwall}
+    case "$BUILD_MODE" in no-passwall) ;; *) echo "Unknown build mode: $BUILD_MODE" >&2; exit 1 ;; esac
 fi
 [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]] || exit 1
 [[ "$TARGET" =~ ^[a-z0-9_-]+$ && "$SUBTARGET" =~ ^[a-z0-9_-]+$ && "$PROFILE" =~ ^[a-zA-Z0-9_-]+$ ]] || exit 1
@@ -39,9 +39,6 @@ upstream_revision=prebuilt
 if [[ "$RELEASE_ROUTE" != ImageBuilder ]]; then
     upstream_revision=$(git -C "$build_dir" rev-parse HEAD)
     version="$version-${upstream_revision:0:12}"
-fi
-if [[ "$RELEASE_ROUTE" == Customer && "$BUILD_MODE" == lite ]]; then
-    version="$version-lite"
 fi
 release_tag="$project-R3S-$RELEASE_ROUTE-$version-$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT"
 
