@@ -146,6 +146,56 @@ esac
         self.assertIn("official ImageBuilder baseline", info)
         self.assertIn("packages=luci sing-box", info)
 
+    def test_customer_lite_is_identified_in_release_name_and_metadata(self):
+        self.env.update(RELEASE_ROUTE="Customer", RELEASE_VERSION="v25.12.5", BUILD_MODE="lite")
+        self.assert_success(self.run_helper("collect-release.sh"))
+        self.assertIn("build_mode=lite\n", (self.release / "build-info.txt").read_text())
+        self.assertIn(f"{REVISION[:12]}-lite-123456789.1", (self.tree / "github.env").read_text())
+
+    def prepare_compile(self):
+        self.write(".config", "CONFIG_TARGET_rockchip=y\n")
+        self.env.update(BUILD_JOBS="4", BUILD_LOG_DIR="build-logs")
+        self.write("bin/make", '''#!/bin/bash
+printf '%s\\n' "$*" >> make-calls.log
+echo "stdout: $*"
+echo "stderr: $*" >&2
+if [ "$1" = -j4 ]; then exit "${PARALLEL_STATUS:-0}"; fi
+exit "${SERIAL_STATUS:-0}"
+''')
+
+    def test_successful_compile_runs_once_and_captures_stdout_and_stderr(self):
+        self.prepare_compile()
+        self.assert_success(self.run_helper("compile.sh"))
+        self.assertEqual((self.tree / "make-calls.log").read_text().splitlines(), ["-j4"])
+        log = (self.tree / "build-logs/parallel.log").read_text()
+        self.assertIn("stdout: -j4", log)
+        self.assertIn("stderr: -j4", log)
+        self.assertFalse((self.tree / "build-logs/retry-verbose.log").exists())
+
+    def test_failed_parallel_compile_retries_once_with_verbose_output(self):
+        self.prepare_compile()
+        self.env.update(PARALLEL_STATUS="2")
+        self.assert_success(self.run_helper("compile.sh"))
+        self.assertEqual((self.tree / "make-calls.log").read_text().splitlines(), ["-j4", "-j1 V=s"])
+        self.assertIn("stderr: -j1 V=s", (self.tree / "build-logs/retry-verbose.log").read_text())
+
+    def test_failed_serial_retry_preserves_exit_status_despite_tee(self):
+        self.prepare_compile()
+        self.env.update(PARALLEL_STATUS="2", SERIAL_STATUS="42")
+        result = self.run_helper("compile.sh")
+        self.assertEqual(result.returncode, 42, result.stdout + result.stderr)
+        self.assertEqual(len((self.tree / "make-calls.log").read_text().splitlines()), 2)
+        self.assertIn("status=42", result.stdout)
+
+    def test_invalid_jobs_or_missing_config_never_runs_make(self):
+        self.prepare_compile()
+        self.env.update(BUILD_JOBS="4;echo invalid")
+        self.assertNotEqual(self.run_helper("compile.sh").returncode, 0)
+        self.env.update(BUILD_JOBS="4")
+        (self.tree / ".config").unlink()
+        self.assertNotEqual(self.run_helper("compile.sh").returncode, 0)
+        self.assertFalse((self.tree / "make-calls.log").exists())
+
     def test_rerun_attempt_receives_a_different_tag(self):
         self.assert_success(self.run_helper("collect-release.sh"))
         original = (self.tree / "github.env").read_text().splitlines()[0]

@@ -11,6 +11,11 @@ TARGET=${TARGET:-rockchip}
 SUBTARGET=${SUBTARGET:-armv8}
 PROFILE=${PROFILE:-friendlyarm_nanopi-r3s}
 ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE:-4096}
+BUILD_MODE=${BUILD_MODE:-full}
+case "$BUILD_MODE" in
+    full|lite) ;;
+    *) echo "ERROR: BUILD_MODE 必须为 full 或 lite。" >&2; exit 1 ;;
+esac
 for value in "$TARGET" "$SUBTARGET" "$PROFILE"; do
     [[ "$value" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "ERROR: 非法目标配置: $value" >&2; exit 1; }
 done
@@ -37,6 +42,7 @@ CONFIG_TARGET_ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}
 # ------------------------------------------------------------------------------
 CONFIG_DEVEL=y
 CONFIG_USE_MOLD=y
+CONFIG_CCACHE=y
 
 # ------------------------------------------------------------------------------
 # 3. Web UI 界面、Argon 现代主题与中文化组件
@@ -149,8 +155,25 @@ CONFIG_PACKAGE_docker=n
 CONFIG_PACKAGE_dockerd=n
 EOF
 
+if [[ "$BUILD_MODE" == lite ]]; then
+    # PassWall defaults select sslocal; disable both the selectors and all variants.
+    cat >> .config <<'EOF'
+CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client=n
+CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Server=n
+CONFIG_PACKAGE_shadowsocks-rust-sslocal=n
+CONFIG_PACKAGE_shadowsocks-rust-ssserver=n
+CONFIG_PACKAGE_shadowsocks-rust-ssmanager=n
+CONFIG_PACKAGE_shadowsocks-rust-ssservice=n
+CONFIG_PACKAGE_shadowsocks-rust-ssurl=n
+EOF
+fi
+
 # 自动补全所有依赖，并在未知包、依赖冲突或目标不支持时立即报错。
 cp .config .config.requested
 make defconfig RECURSIVE_DEP_IS_ERROR=1
 bash "$SCRIPT_DIR/../build/check-config.sh" .config.requested .config
-echo "✔ [Customer] 全套 .config 配置生成并依赖展开完毕。"
+if [[ "$BUILD_MODE" == lite ]] && grep -Eq '^CONFIG_PACKAGE_(shadowsocks-rust-[^=]+|luci-app-passwall_INCLUDE_Shadowsocks_Rust_(Client|Server))=[ym]$' .config; then
+    echo "ERROR: 精简模式仍选中了 Rust Shadowsocks，请检查上游依赖。" >&2
+    exit 1
+fi
+echo "✔ [Customer] $BUILD_MODE 模式 .config 配置生成并依赖展开完毕。"

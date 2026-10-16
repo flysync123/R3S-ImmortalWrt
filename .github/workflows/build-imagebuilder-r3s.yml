@@ -46,7 +46,7 @@ jobs:
     steps:
       # 1. 检出当前仓库中的代码与 files/ 优化配置文件
       - name: Checkout 仓库文件
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # 2. 安装解压依赖并下载官方预编译好的 ImageBuilder 镜像生成器
       - name: 准备依赖并下载 ImageBuilder
@@ -96,15 +96,16 @@ jobs:
 
       # 5. 上传固件至 GitHub Actions Artifacts（构建产物备份）
       - name: 上传构建固件到 Actions Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ env.RELEASE_TAG }}
           path: release_files/*
           if-no-files-found: error
+          compression-level: 0
 
       # 6. 自动发布到 GitHub Releases
       - name: 发布至 GitHub Releases
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TITLE }}

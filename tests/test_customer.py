@@ -42,7 +42,7 @@ class CustomerScriptsTest(unittest.TestCase):
 
     def run_script(self, script, **extra):
         env = os.environ.copy()
-        for key in ("TARGET", "SUBTARGET", "PROFILE", "ROOTFS_PARTSIZE", "GITHUB_WORKSPACE"):
+        for key in ("TARGET", "SUBTARGET", "PROFILE", "ROOTFS_PARTSIZE", "GITHUB_WORKSPACE", "BUILD_MODE"):
             env.pop(key, None)
         env.update(extra)
         return subprocess.run(
@@ -337,6 +337,8 @@ esac
         self.assertIn("CONFIG_PACKAGE_fwtool=y", config)
         self.assertIn("CONFIG_PACKAGE_jsonfilter=y", config)
         self.assertIn("CONFIG_PACKAGE_mihomo-meta=y", config)
+        self.assertIn("CONFIG_CCACHE=y", config)
+        self.assertNotIn("CONFIG_PACKAGE_shadowsocks-rust-sslocal=n", config)
         self.assertNotIn("CONFIG_PACKAGE_kmod-bpf=", config)
         self.assertNotIn("luci-app-wireguard", config)
         self.assertNotIn("luci-i18n-wireguard", config)
@@ -348,6 +350,31 @@ esac
         result = self.run_script("03-generate-config.sh")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("luci-proto-wireguard", result.stdout + result.stderr)
+
+    def test_lite_disables_rust_shadowsocks_and_retains_proxy_apps(self):
+        self.write("test-bin/make", "#!/bin/bash\nexit 0\n")
+        self.assert_success(self.run_script("03-generate-config.sh", BUILD_MODE="lite"))
+        config = (self.tree / ".config").read_text(encoding="utf-8")
+        for suffix in ("Client", "Server"):
+            self.assertIn(f"CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_{suffix}=n\n", config)
+        for variant in ("sslocal", "ssserver", "ssmanager", "ssservice", "ssurl"):
+            self.assertIn(f"CONFIG_PACKAGE_shadowsocks-rust-{variant}=n\n", config)
+        for package in ("luci-app-homeproxy", "luci-app-nikki", "luci-app-passwall", "luci-app-mosdns", "mihomo-meta", "sing-box"):
+            self.assertIn(f"CONFIG_PACKAGE_{package}=y\n", config)
+        self.assertEqual(config, (self.tree / ".config.requested").read_text(encoding="utf-8"))
+
+    def test_lite_rejects_rust_shadowsocks_reselected_by_dependencies(self):
+        for selected in ("shadowsocks-rust-sslocal=y", "shadowsocks-rust-ssserver=m",
+                         "luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client=y"):
+            with self.subTest(selected=selected):
+                self.write("test-bin/make", f"#!/bin/bash\nprintf '%s\\n' 'CONFIG_PACKAGE_{selected}' >> .config\n")
+                result = self.run_script("03-generate-config.sh", BUILD_MODE="lite")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Rust Shadowsocks", result.stderr)
+
+    def test_unknown_build_mode_is_rejected_before_writing_config(self):
+        self.assertNotEqual(self.run_script("03-generate-config.sh", BUILD_MODE="typo").returncode, 0)
+        self.assertFalse((self.tree / ".config").exists())
 
     def test_invalid_target_input_is_rejected(self):
         self.write("test-bin/make", "#!/bin/bash\nexit 0\n")

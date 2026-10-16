@@ -48,6 +48,21 @@ zram 可以缓解部分内存压力，不能保证不发生 OOM。packet steerin
 2. 构建成功后，从 Actions Artifacts 或 Releases 下载产物。
 3. 发布标签包含构建路线、版本或分支、上游短提交号（源码构建）及运行编号。同日重跑使用不同标签。
 
+### 编译加速与 Customer 精简模式
+
+Customer 手动运行时可选择 `build_mode`：
+
+- `full`（默认）：保留原有完整组件，包括 PassWall 的 Rust Shadowsocks 客户端。
+- `lite`：关闭 Rust Shadowsocks 客户端、服务端及其工具，保留 HomeProxy / sing-box、Nikki / Mihomo、PassWall / Xray、MosDNS 等。PassWall 中需要 Rust Shadowsocks 的功能不可用，其他核心支持的 Shadowsocks 能力以各核心为准。发布名称带 `lite`，`build-info.txt` 记录所选模式。
+
+当前锁定依赖中，Rust Shadowsocks 是需要构建 Rust 主机工具链的应用；`lite` 可避开这部分首次编译。配置展开后若它被上游依赖重新选中，构建会明确失败。
+
+Customer 和 Source 均启用 C/C++ ccache（上限 1 GiB），缓存下载目录及 Go 编译结果。缓存按路线、Runner 系统和架构隔离，并为每次运行保存新快照；完整模式和精简模式可复用同一路线的内容缓存。缓存服务失败不阻止构建，仓库额度或过期清理可能导致缓存失效。工作流不缓存整个 `build_dir` 或 `staging_dir`。
+
+首次运行需要生成缓存，完整模式仍需编译 Rust 工具链；缓存不会跳过所有工具链步骤。实际提速需比较同模式的冷缓存和热缓存构建。已有固件为压缩文件，上传时关闭二次压缩。并行编译使用 Runner 的可用 CPU 数，失败后只做一次详细的单线程重试；编译日志单独保留 7 天。
+
+更新后从 `main` 点击 **Run workflow** 并选择模式；旧记录的 **Re-run** 仍使用旧版工作流。
+
 发布内容包括：
 
 - 以发布标签为前缀的原始固件文件，保留完整设备和文件系统标识。

@@ -19,6 +19,10 @@ case "$RELEASE_ROUTE" in
     Customer) project=OpenWrt ;;
     *) echo "Unknown release route: $RELEASE_ROUTE" >&2; exit 1 ;;
 esac
+if [[ "$RELEASE_ROUTE" == Customer ]]; then
+    BUILD_MODE=${BUILD_MODE:-full}
+    case "$BUILD_MODE" in full|lite) ;; *) echo "Unknown build mode: $BUILD_MODE" >&2; exit 1 ;; esac
+fi
 [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]] || exit 1
 [[ "$TARGET" =~ ^[a-z0-9_-]+$ && "$SUBTARGET" =~ ^[a-z0-9_-]+$ && "$PROFILE" =~ ^[a-zA-Z0-9_-]+$ ]] || exit 1
 
@@ -35,6 +39,9 @@ upstream_revision=prebuilt
 if [[ "$RELEASE_ROUTE" != ImageBuilder ]]; then
     upstream_revision=$(git -C "$build_dir" rev-parse HEAD)
     version="$version-${upstream_revision:0:12}"
+fi
+if [[ "$RELEASE_ROUTE" == Customer && "$BUILD_MODE" == lite ]]; then
+    version="$version-lite"
 fi
 release_tag="$project-R3S-$RELEASE_ROUTE-$version-$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT"
 
@@ -84,6 +91,9 @@ fi
     printf 'target=%s/%s\nprofile=%s\nrootfs_partsize_mib=%s\n' "$TARGET" "$SUBTARGET" "$PROFILE" "$ROOTFS_PARTSIZE"
     printf 'run_url=https://github.com/%s/actions/runs/%s\nrun_attempt=%s\n' "${GITHUB_REPOSITORY:-unknown}" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
     printf 'built_at_utc=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+    if [[ "$RELEASE_ROUTE" == Customer ]]; then
+        printf 'build_mode=%s\n' "$BUILD_MODE"
+    fi
     if [[ "$RELEASE_ROUTE" == ImageBuilder ]]; then
         printf 'imagebuilder_url=%s\npackages=%s\n' "${IB_URL:?}" "${PACKAGES:?}"
         printf 'buildinfo_origin=official ImageBuilder baseline; actual packages are recorded in the manifest\n'

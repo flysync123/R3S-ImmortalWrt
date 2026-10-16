@@ -25,6 +25,8 @@ env:
   PROFILE: "friendlyarm_nanopi-r3s"
   ROOTFS_PARTSIZE: "4096"
   TZ: Asia/Shanghai
+  CCACHE_MAXSIZE: 1G
+  CCACHE_COMPILERCHECK: content
 
 jobs:
   build:
@@ -35,7 +37,7 @@ jobs:
     steps:
       # 1. 检出当前仓库中的代码与 files/ 优化配置文件
       - name: Checkout 仓库文件
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # 在安装依赖之前检查引用；兼容 25.12.2 / openwrt-25.12.2 的版本输入。
       - name: 校验并规范化上游版本
@@ -89,6 +91,7 @@ jobs:
           CONFIG_TARGET_ROOTFS_PARTSIZE=${ROOTFS_PARTSIZE}
           CONFIG_DEVEL=y
           CONFIG_USE_MOLD=y
+          CONFIG_CCACHE=y
           CONFIG_PACKAGE_luci=y
           CONFIG_PACKAGE_luci-theme-argon=y
           CONFIG_PACKAGE_luci-app-argon-config=y
@@ -140,19 +143,69 @@ jobs:
           fi
 
       # 7. 预下载依赖包 (DL)
+      - name: 恢复下载源码缓存
+        id: dl-cache
+        uses: actions/cache/restore@v5
+        continue-on-error: true
+        with:
+          path: |
+            openwrt/dl
+          key: ${{ runner.os }}-${{ runner.arch }}-ubuntu22-r3s-source-dl-v1-${{ hashFiles('openwrt/.config', 'scripts/customer/00-dependencies.sh') }}-${{ github.run_id }}.${{ github.run_attempt }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-ubuntu22-r3s-source-dl-v1-
+
+      - name: 恢复C/C++ 与 Go 编译缓存
+        id: compile-cache
+        uses: actions/cache/restore@v5
+        continue-on-error: true
+        with:
+          path: |
+            openwrt/.ccache
+            openwrt/tmp/go-build
+          key: ${{ runner.os }}-${{ runner.arch }}-ubuntu22-r3s-source-compile-v1-${{ hashFiles('openwrt/.config', 'scripts/customer/00-dependencies.sh') }}-${{ github.run_id }}.${{ github.run_attempt }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-ubuntu22-r3s-source-compile-v1-
+
       - name: 预下载依赖源码包 (make download)
+        id: download
         run: |
           cd openwrt
           make download -j8
-          find dl -size -1024c -exec ls -l {} \;
-          find dl -size -1024c -exec rm -f {} \;
 
       # 8. 编译固件 (多核优先，失败自动降级单核输出详细日志)
       - name: 编译固件 (make compile)
+        id: compile
         run: |
           cd openwrt
-          echo -e "$(nproc) thread compile"
-          make -j$(nproc) || make -j1 || make -j1 V=s
+          bash "$GITHUB_WORKSPACE/scripts/build/compile.sh"
+
+      - name: 保存下载源码缓存
+        if: ${{ !cancelled() && steps.download.outcome == 'success' && steps.dl-cache.outputs.cache-primary-key != '' }}
+        uses: actions/cache/save@v5
+        continue-on-error: true
+        with:
+          path: |
+            openwrt/dl
+          key: ${{ steps.dl-cache.outputs.cache-primary-key }}
+
+      - name: 保存编译缓存
+        if: ${{ !cancelled() && (steps.compile.outcome == 'success' || steps.compile.outcome == 'failure') && steps.compile-cache.outputs.cache-primary-key != '' }}
+        uses: actions/cache/save@v5
+        continue-on-error: true
+        with:
+          path: |
+            openwrt/.ccache
+            openwrt/tmp/go-build
+          key: ${{ steps.compile-cache.outputs.cache-primary-key }}
+
+      - name: 保留编译日志
+        if: ${{ !cancelled() && (steps.compile.outcome == 'success' || steps.compile.outcome == 'failure') }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: source-build-logs-${{ github.run_id }}.${{ github.run_attempt }}
+          path: openwrt/build-logs/*.log
+          retention-days: 7
+          if-no-files-found: warn
 
       # 9. 保存上游提交、最终配置与软件包清单，生成唯一发布标签
       - name: 整理发布固件与构建记录
@@ -165,15 +218,16 @@ jobs:
 
       # 10. 上传固件至 Actions Artifacts
       - name: 上传构建固件到 Actions Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ env.RELEASE_TAG }}
           path: release_files/*
           if-no-files-found: error
+          compression-level: 0
 
       # 11. 自动发布到 GitHub Releases
       - name: 发布至 GitHub Releases
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TITLE }}
