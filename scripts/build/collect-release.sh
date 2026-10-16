@@ -103,7 +103,7 @@ fi
     record_revision "$GITHUB_WORKSPACE" customization
     if [[ "$RELEASE_ROUTE" != ImageBuilder ]]; then
         record_revision "$build_dir" upstream
-        for directory in "$build_dir/feeds" "$build_dir/package"; do
+        for directory in "$build_dir/feeds" "$build_dir/package" "$build_dir/customer-sources"; do
             [[ -d "$directory" ]] || continue
             while IFS= read -r -d '' dotgit; do
                 repository=${dotgit%/.git}

@@ -122,10 +122,13 @@ esac
 
     def test_customer_release_includes_pinned_dependencies(self):
         self.env.update(RELEASE_ROUTE="Customer", RELEASE_VERSION="v25.12.5")
+        (self.build / "customer-sources/golang/.git").mkdir(parents=True)
         self.assert_success(self.run_helper("collect-release.sh"))
         self.assertEqual((self.release / "customer-dependencies.tsv").read_bytes(),
                          (self.build / "customer-dependencies.tsv").read_bytes())
         self.assertIn("OpenWrt-R3S-Customer-v25.12.5-", (self.tree / "github.env").read_text())
+        self.assertIn(f"customer-sources/golang\t{REVISION}\t",
+                      (self.release / "source-revisions.tsv").read_text())
 
     def test_imagebuilder_uses_official_baseline_not_source_build_outputs(self):
         self.env.update(RELEASE_ROUTE="ImageBuilder", RELEASE_VERSION="25.12.2",

@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # Customer OpenWrt Build System - Step 2: 软件包定制、工具链升级与系统参数 (DIY Part 2)
-# 作用：智能适配 Go 工具链、清理冲突包、按固定提交克隆插件与注入 files/ 目录
+# 作用：固定现代 Go 工具链、清理冲突包、按固定提交克隆插件与注入 files/ 目录
 # ==============================================================================
 
 set -euo pipefail
@@ -23,17 +23,62 @@ if [ ! -f "feeds/nikki/mihomo-meta/Makefile" ]; then
     exit 1
 fi
 
-# 1. 检查并适配 Golang 编译工具链
-# 关键原理：OpenWrt 25.12+ 官方源已内置现代化 Go 1.26+ 工具链 (golang1.26/golang-bootstrap/golang-version.mk)
-#           若强制使用旧结构仓库覆盖，会导致 feeds 索引损坏并缺失 golang-version.mk 从而造成编译失败。
-#           因此：当检测到官方 25.12+ 现代 Go 工具链时保持原生；仅当为旧版 OpenWrt (24.10及以前) 时才升级。
-if [ -d "feeds/packages/lang/golang/golang1.27" ] || [ -d "feeds/packages/lang/golang/golang1.26" ] || [ -d "feeds/packages/lang/golang/golang1.25" ] || [ -f "feeds/packages/lang/golang/golang-version.mk" ]; then
-    echo "✔ 检测到当前 OpenWrt 已内置现代 Golang 工具链，保持原生结构以确保编译通过。"
-elif [ -d "feeds/packages/lang/golang" ]; then
-    echo "正在为旧版环境升级 Golang 编译环境至 26.x..."
-    rm -rf feeds/packages/lang/golang
-    customer_clone_dependency golang
+# 1. Xray 26.10.10 需要 Go 1.27；固定官方现代布局，保持版本选择、bootstrap 与 helper 一致。
+# 源码克隆在 package/ 与 feeds/ 扫描范围之外，只复制 lang/golang 子树。
+build_root=$(pwd -P)
+for owned_path in customer-sources/golang feeds/packages/lang/golang package/feeds/packages; do
+    if [ "$(readlink -m -- "$owned_path")" != "$build_root/$owned_path" ]; then
+        echo "ERROR: Refusing unexpected symlink path: $owned_path" >&2
+        exit 1
+    fi
+done
+[ -d feeds/packages/lang ] || { echo "ERROR: Missing feeds/packages/lang." >&2; exit 1; }
+if [ -e feeds/packages/lang/golang ] && [ ! -d feeds/packages/lang/golang ]; then
+    echo "ERROR: feeds/packages/lang/golang is not a directory." >&2
+    exit 1
 fi
+
+# 先验证所有已安装 Go 包链接，再执行删除；保留用户实体目录和指向其他源的链接。
+golang_links=()
+for installed in package/feeds/packages/golang*; do
+    [ -e "$installed" ] || [ -L "$installed" ] || continue
+    if [ ! -L "$installed" ]; then
+        echo "ERROR: $installed is not a feed symlink." >&2
+        exit 1
+    fi
+    case "$(readlink -m -- "$installed")" in
+        "$build_root/feeds/packages/lang/golang/"*) golang_links+=("$installed") ;;
+        *) echo "ERROR: $installed points outside the Go feed subtree." >&2; exit 1 ;;
+    esac
+done
+
+mkdir -p customer-sources
+rm -rf -- "$build_root/customer-sources/golang"
+customer_clone_dependency golang
+golang_source=customer-sources/golang/lang/golang
+for required in golang-version.mk golang-values.mk golang-package.mk golang-host-build.mk \
+    golang-compiler.mk golang-build.sh go-gcc-helper go-strip-helper \
+    golang-bootstrap/Makefile golang-bootstrap/Config.in golang/Makefile golang1.27/Makefile; do
+    [ -f "$golang_source/$required" ] || {
+        echo "ERROR: Missing modern Go toolchain file: $golang_source/$required" >&2
+        exit 1
+    }
+done
+if ! grep -Eq '^GO_DEFAULT_VERSION[[:space:]]*:=[[:space:]]*1\.27[[:space:]]*$' "$golang_source/golang-values.mk" ||
+   ! grep -Eq '^PKG_NAME[[:space:]]*:=[[:space:]]*golang1\.27[[:space:]]*$' "$golang_source/golang1.27/Makefile" ||
+   ! grep -Eq '^GO_VERSION_MAJOR_MINOR[[:space:]]*:=[[:space:]]*1\.27[[:space:]]*$' "$golang_source/golang1.27/Makefile" ||
+   ! grep -Eq '^GO_VERSION_PATCH[[:space:]]*:=[[:space:]]*2[[:space:]]*$' "$golang_source/golang1.27/Makefile"; then
+    echo "ERROR: Locked Go toolchain must provide default Go 1.27.2." >&2
+    exit 1
+fi
+
+if [ "${#golang_links[@]}" -gt 0 ]; then
+    rm -f -- "${golang_links[@]}"
+fi
+rm -rf -- "$build_root/feeds/packages/lang/golang"
+mkdir -p feeds/packages/lang/golang
+cp -R "$golang_source/." feeds/packages/lang/golang/
+echo "✔ 已固定官方 Go 1.27.2 工具链及现代 bootstrap/helper 布局。"
 
 # 2. 清除官方基础源中的旧版/冲突包定义（避免与 passwall_packages / mosdns 源产生重复声明冲突）
 echo "正在清理官方旧版冲突包定义..."

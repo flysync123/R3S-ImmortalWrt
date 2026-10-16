@@ -1,6 +1,6 @@
 #!/bin/bash
-# Customer third-party source lock. Revisions checked against public Git refs on
-# 2026-10-15; a revision lock alone does not certify a complete firmware build.
+# Customer third-party source lock. A revision lock alone does not certify a
+# complete firmware build; package requirements must match the pinned toolchain.
 # Format: kind|name|repository|commit|build-tree path
 
 customer_dependencies() {
@@ -13,7 +13,7 @@ package|luci-theme-argon|https://github.com/jerrykuku/luci-theme-argon.git|c4a8b
 package|luci-app-argon-config|https://github.com/jerrykuku/luci-app-argon-config.git|445af53fbee6e00fa6efc0ae33f8b2854df65500|package/custom/luci-app-argon-config
 package|homeproxy|https://github.com/immortalwrt/homeproxy.git|98a6ad9e71484528008ff435694fd107591f3a1d|package/custom/luci-app-homeproxy
 package|autocore|https://github.com/sbwml/autocore-arm.git|9b52f345ee2db331ce2fefcdcc50a9d6120c11a3|package/custom/autocore
-toolchain|golang|https://github.com/sbwml/packages_lang_golang.git|dba928c4f25b3290090d5937fcc6271f01a2ec91|feeds/packages/lang/golang
+toolchain|golang|https://github.com/openwrt/packages.git|0ee3fbc2992c75b2668933467479343c5e4c75e9|customer-sources/golang
 EOF
 }
 
